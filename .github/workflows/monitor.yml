@@ -1,0 +1,59 @@
+name: Monitor de anúncios
+
+on:
+  schedule:
+    - cron: "23 10 * * *"   # todo dia às 10:23 UTC (07:23 em Brasília)
+  workflow_dispatch:         # botão "Run workflow" para rodar na hora
+
+permissions:
+  contents: write            # para salvar o histórico e os relatórios no repositório
+
+concurrency:
+  group: monitor-anuncios
+  cancel-in-progress: false
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ADS_MONITOR_DIR: dados
+      SCRAPECREATORS_API_KEY: ${{ secrets.SCRAPECREATORS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verificar chave da API
+        run: |
+          if [ -z "$SCRAPECREATORS_API_KEY" ]; then
+            echo "::error::Crie o secret SCRAPECREATORS_API_KEY em Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+
+      - name: Atualizar lista de lojas
+        run: python scripts/monitor.py sync --file lojas.json
+
+      - name: Coletar anúncios (300 de maior impressão por loja)
+        run: python scripts/monitor.py run --source scrapecreators --max-ads 300 --sort impressions
+
+      - name: Reagrupar produtos do histórico (regras atuais)
+        run: python scripts/monitor.py rekey
+
+      - name: Gerar relatório
+        run: |
+          DIA=$(date -u +%F)
+          python scripts/monitor.py report --out "relatorios/$DIA.md" --csv-dir relatorios/csv
+          cp "relatorios/$DIA.md" relatorios/ultimo.md
+          cat relatorios/ultimo.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Salvar no repositório
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dados relatorios
+          git diff --cached --quiet || git commit -m "Coleta $(date -u +%F)"
+          git push origin HEAD
