@@ -149,7 +149,7 @@ def product_key(url):
     return key
 
 
-LEAD_WORDS = {"news", "adv", "advertorial", "article", "blog", "lp", "landing", "discover", "new", "hot", "sale",
+LEAD_WORDS = {"news", "adv", "advertorial", "article", "listicle", "blog", "lp", "landing", "discover", "new", "hot", "sale",
               "buy", "shop", "get", "official", "the", "best", "top"}
 ACRONYMS = {"ssd", "dvd", "tv", "pc", "gps", "rgb", "hd", "mp3", "mp4", "lcd", "usb", "led", "uv", "rv",
             "utv", "atv", "xl", "xxl", "3d", "4k", "8k", "5g", "dc", "ac", "bbq", "diy", "cpr", "ems"}
@@ -778,6 +778,38 @@ def store_state(con, st):
             "run_date": {r["id"]: r["run_at"] for r in runs}}
 
 
+SHORT_OK = {"in", "of", "for", "and", "the", "with", "to", "on", "car", "pro", "set", "kit", "box", "bag", "pen", "cup",
+            "mat", "pad", "toy", "fan", "hat", "cap", "saw", "max", "air", "bed", "pet", "dog", "cat", "oil", "gel",
+            "men", "kid", "red", "big", "mini", "rv", "atv", "utv", "x"} | ACRONYMS
+GENERIC_PAGES = {"article", "listicle", "index", "home", "page", "lp", "landing", "offer", "sale", "shop", "products"}
+
+
+def descriptive_slug(key):
+    """O link descreve o produto? (não é código, página genérica ou uma palavra só)"""
+    slug = key.split("/products/")[-1] if "/products/" in key else key.split("/", 1)[-1]
+    tokens = [t for t in re.split(r"[-_/.]+", slug.lower()) if t]
+    if any(len(t) >= 10 and re.search(r"\d", t) for t in tokens):          # cmq7inspk0004s561...
+        return False
+    words = [t for t in tokens if re.fullmatch(r"[a-z]{3,}", t) and t not in GENERIC_PAGES]
+    return len(words) >= 2
+
+
+def name_from_ads(ads):
+    """Nome a partir do título mais comum dos anúncios (para links que não descrevem o produto)."""
+    titles = [re.sub(r"\s+", " ", re.sub(r"[^\w\s&'’.,!?%$+-]", " ", (x.get("title") or ""))).strip(" .,-")
+              for x in ads]
+    titles = [t for t in titles if len(t) >= 6]
+    if not titles:
+        return None
+    best = max(set(titles), key=lambda t: (titles.count(t), -len(t)))
+    return best if len(best) <= 70 else best[:67].rsplit(" ", 1)[0] + "…"
+
+
+def broken_words(name):
+    """Quantos pedaços de palavra estranhos o nome tem ('circu it re lay' -> 3)."""
+    return sum(1 for t in re.findall(r"[a-z]+", (name or "").lower()) if len(t) <= 3 and t not in SHORT_OK)
+
+
 def products_of(S):
     """Linhas da planilha 'Produtos anunciados' para uma loja."""
     cur, prev, now_ts = S["cur"], S["prev"], S["now_ts"]
@@ -802,8 +834,11 @@ def products_of(S):
         with_cover = sorted((r for r in mine if r["cover"] and os.path.exists(r["cover"])),
                             key=lambda r: r["start_date"] or now_ts)
         first = S["first_run_of"].get(k)
+        name = S["name"](k)
+        if not descriptive_slug(k):
+            name = name_from_ads(ads) or name
         rows.append({
-            "key": k, "name": S["name"](k), "active": n,
+            "key": k, "name": name, "active": n, "named_by_ad": not descriptive_slug(k),
             "delta": (n - pp.get(k, 0)) if prev else None,
             "oldest": days_between(min(starts), now_ts) if starts else None,
             "since": S["run_date"].get(first, "")[:10],
@@ -888,6 +923,9 @@ def merge_across_stores(rows):
     for idx in groups.values():
         mem = sorted((rows[i] for i in idx), key=lambda r: -r["active"])
         top = dict(mem[0])
+        if len(mem) > 1:   # nome mais "limpo": link descritivo, sem palavras quebradas
+            best = min(mem, key=lambda r: (r.get("named_by_ad", False), broken_words(r["name"]), -r["active"]))
+            top["name"] = best["name"]
         lojas = defaultdict(int)
         for r in mem:
             lojas[r["key"].split("/")[0]] += r["active"]
