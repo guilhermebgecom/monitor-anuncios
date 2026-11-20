@@ -72,6 +72,10 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 - **GitHub Actions:** cada coleta leva poucos minutos (a primeira com capas, um pouco mais); cabe com folga nos 2.000 minutos/mês gratuitos de repositórios privados.
 - O consumo de créditos de cada dia aparece no log da execução ("Créditos ScrapeCreators usados nesta coleta").
 
+## Atualizar só a planilha (sem gastar créditos)
+
+Em *Actions → Monitor de anúncios → Run workflow*, marque **"Só atualizar a planilha"** antes de clicar no botão verde. O robô republica a planilha com os dados já coletados, sem chamar a API (útil depois de mudanças visuais).
+
 ## Mudar horário ou tamanho da amostra
 
 Em `.github/workflows/monitor.yml`:

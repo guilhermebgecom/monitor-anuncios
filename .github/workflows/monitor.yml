@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "23 10 * * *"   # todo dia às 10:23 UTC (07:23 em Brasília)
   workflow_dispatch:         # botão "Run workflow" para rodar na hora
+    inputs:
+      so_planilha:
+        description: "Só atualizar a planilha (não coleta anúncios, não gasta créditos)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write            # salvar o histórico e os relatórios no repositório
@@ -33,6 +38,7 @@ jobs:
         run: pip install --quiet pillow
 
       - name: Verificar chave da API
+        if: ${{ !inputs.so_planilha }}
         run: |
           if [ -z "$SCRAPECREATORS_API_KEY" ]; then
             echo "::error::Crie o secret SCRAPECREATORS_API_KEY em Settings > Secrets and variables > Actions"
@@ -40,15 +46,19 @@ jobs:
           fi
 
       - name: Atualizar lista de lojas
+        if: ${{ !inputs.so_planilha }}
         run: python scripts/monitor.py sync --file lojas.json
 
       - name: Coletar anúncios (150 de maior impressão por loja)
+        if: ${{ !inputs.so_planilha }}
         run: python scripts/monitor.py run --source scrapecreators --max-ads 150 --sort impressions
 
       - name: Reagrupar produtos do histórico (regras atuais)
+        if: ${{ !inputs.so_planilha }}
         run: python scripts/monitor.py rekey
 
       - name: Gerar relatório
+        if: ${{ !inputs.so_planilha }}
         run: |
           DIA=$(date -u +%F)
           python scripts/monitor.py report --out "relatorios/$DIA.md" --csv-dir relatorios/csv
@@ -56,7 +66,7 @@ jobs:
           cat relatorios/ultimo.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Salvar no repositório
-        if: always()
+        if: ${{ always() && !inputs.so_planilha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

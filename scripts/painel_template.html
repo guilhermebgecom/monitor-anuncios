@@ -43,7 +43,7 @@
   input[type=search] { min-width: 220px; }
   .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
   .scroll { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; min-width: 860px; }
+  table { width: 100%; border-collapse: collapse; min-width: 1240px; table-layout: fixed; }
   th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
   th { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600;
        background: var(--surface-2); position: sticky; top: 0; white-space: nowrap; }
@@ -140,6 +140,7 @@
   <section id="tab-produtos">
     <div class="panel scroll">
       <table>
+        <colgroup id="cols"></colgroup>
         <thead><tr id="thead"></tr></thead>
         <tbody id="tbody"></tbody>
       </table>
@@ -207,14 +208,16 @@ function filtered() {
     (!q || p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q)));
 }
 
+// larguras fixas: as colunas não mudam de posição quando aparece um selo em "Sinal"
 const COLS = [
-  { k: null, t: "Criativo" }, { k: "name", t: "Produto" }, { k: "store", t: "Loja" },
-  { k: "active", t: "Anúncios ativos", num: 1 }, { k: "delta", t: "Variação", num: 1 },
-  { k: "oldest", t: "Anúncio mais antigo (dias)", num: 1 }, { k: "since", t: "Monitorando desde" },
-  { k: null, t: "Sinal" }, { k: null, t: "" },
+  { k: null, t: "Criativo", w: 76 }, { k: "name", t: "Produto", w: null }, { k: "store", t: "Loja", w: 120 },
+  { k: "active", t: "Anúncios ativos", num: 1, w: 150 }, { k: "delta", t: "Variação", num: 1, w: 105 },
+  { k: "oldest", t: "Mais antigo (dias)", num: 1, w: 150 }, { k: "since", t: "Monitorando desde", w: 160 },
+  { k: null, t: "Sinal", w: 160 }, { k: null, t: "", w: 120 },
 ];
 
 function renderTable() {
+  $("#cols").innerHTML = COLS.map(c => c.w ? `<col style="width:${c.w}px">` : "<col>").join("");
   $("#thead").innerHTML = COLS.map(c => c.k
     ? `<th class="sort ${c.num ? "num" : ""}" data-k="${c.k}">${c.t}${state.sort === c.k ? `<span class="arrow">${state.dir < 0 ? "▼" : "▲"}</span>` : ""}</th>`
     : `<th>${c.t}</th>`).join("");
