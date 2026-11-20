@@ -54,7 +54,6 @@ jobs:
         run: python scripts/monitor.py run --source scrapecreators --max-ads 150 --sort impressions
 
       - name: Reagrupar produtos do histórico (regras atuais)
-        if: ${{ !inputs.so_planilha }}
         run: python scripts/monitor.py rekey
 
       - name: Gerar relatório

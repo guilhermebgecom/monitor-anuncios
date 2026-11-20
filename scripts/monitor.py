@@ -268,6 +268,22 @@ def label_from_key(key):
     return name[:1].upper() + name[1:] if name else key
 
 
+def product_links(ad):
+    """Links que definem DE QUAL produto é o anúncio.
+    Carrossel/catálogo (DPA/DCO) com cards levando a produtos diferentes: o anúncio é atribuído ao
+    produto do 1º card (o que abre o anúncio e costuma ser o título). Sem isso, um catálogo com 6
+    produtos contaria 1 anúncio para cada um deles e inflaria as contagens."""
+    s = ad.get("snapshot") or {}
+    cards = [c.get("linkUrl") for c in s.get("cards") or [] if c.get("linkUrl")]
+    if len({product_key(c) for c in cards if product_key(c)}) >= 2:
+        return cards[:1]
+    links = [s.get("linkUrl")] + cards
+    links = [x for x in links if x]
+    # link principal para a página inicial + cards de produto: vale o produto
+    prod = [x for x in links if product_key(x) and "/products/" in product_key(x)]
+    return prod or links
+
+
 def ad_links(ad):
     s = ad.get("snapshot") or {}
     links = [s.get("linkUrl")] + [c.get("linkUrl") for c in s.get("cards") or []]
@@ -539,7 +555,7 @@ def rekey_store(con, store_id):
     a partir dos links originais guardados em ads.data_json. Seguro rodar sempre."""
     ad_links_of = {}
     for r in con.execute("SELECT ad_id, data_json FROM ads WHERE store_id=?", (store_id,)):
-        ad_links_of[r["ad_id"]] = ad_links(json.loads(r["data_json"] or "{}"))
+        ad_links_of[r["ad_id"]] = product_links(json.loads(r["data_json"] or "{}"))
     keys = {k for links in ad_links_of.values() for k in map(product_key, links) if k}
     alias = canonical_keys(keys, [])
     old_first = {r["product_key"]: (r["first_seen"], r["last_seen"], r["url"]) for r in
@@ -622,9 +638,12 @@ def collect(store, a):
         total += t or 0
         capped = capped or cap
         for ad in found:
-            keys = list(dict.fromkeys(k for k in map(product_key, ad_links(ad)) if k))
-            if dom and not links_to(keys, dom):
+            every = [k for k in map(product_key, ad_links(ad)) if k]        # filtro: qualquer link do anúncio
+            if dom and not links_to(every, dom):
                 continue
+            keys = list(dict.fromkeys(k for k in map(product_key, product_links(ad)) if k))
+            if dom:   # loja monitorada: o produto tem de ser dela
+                keys = [k for k in keys if links_to([k], dom)] or [k for k in every if links_to([k], dom)][:1]
             if ad.get("isActive") is False:
                 continue
             ads[ad["adArchiveID"]] = (ad, keys)
@@ -682,7 +701,7 @@ def cmd_run(con, a):
                             row + (ad_id, st["id"], now, now))
             con.execute("INSERT OR REPLACE INTO sightings(run_id, ad_id, collation_count, rank) VALUES(?,?,?,?)",
                         (run_id, ad_id, ad.get("collationCount"), pos))
-            for link in ad_links(ad):
+            for link in product_links(ad):
                 k = product_key(link)
                 if not k:
                     continue
