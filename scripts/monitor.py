@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS sightings (
   run_id INTEGER, ad_id TEXT, collation_count INTEGER, PRIMARY KEY (run_id, ad_id));
 CREATE TABLE IF NOT EXISTS ad_products (
   store_id INTEGER, ad_id TEXT, product_key TEXT, PRIMARY KEY (store_id, ad_id, product_key));
+CREATE TABLE IF NOT EXISTS store_totals (
+  host TEXT, date TEXT, country TEXT, total INTEGER, PRIMARY KEY (host, date));
 CREATE TABLE IF NOT EXISTS products (
   store_id INTEGER, product_key TEXT, name TEXT, url TEXT, image TEXT, first_seen TEXT, last_seen TEXT,
   PRIMARY KEY (store_id, product_key));
@@ -1027,6 +1029,126 @@ def report_store(con, st, a, csv_rows):
     return out
 
 
+# ---------------- sugestões de lojas (a partir das palavras-chave) ----------------
+
+NOT_STORES = ("amazon.", "walmart.", "temu.", "aliexpress.", "alibaba.", "ebay.", "etsy.", "target.com", "bestbuy.",
+              "facebook.", "fb.me", "fb.com", "instagram.", "messenger.", "whatsapp.", "wa.me", "threads.", "youtube.",
+              "youtu.be", "tiktok.", "google.", "apple.com", "apps.apple", "play.google", "linktr.ee", "bit.ly",
+              "shein.", "wish.com", "costco.", "homedepot.", "lowes.", "kickstarter.", "indiegogo.", "gofundme.")
+
+
+def suggestion_name(host):
+    base = re.sub(r"^(www|m|shop|store|us|try|get|go|buy)\.", "", host).split(".")[0]
+    return base[:1].upper() + base[1:]
+
+
+def compute_suggestions(con, top=10):
+    """Lojas que aparecem nas buscas por palavra-chave e não são monitoradas, ranqueadas por sinais
+    de escala. Não gasta créditos: usa só os dados já coletados."""
+    monitored = set()
+    for st in con.execute("SELECT * FROM stores").fetchall():
+        monitored.update(json.loads(st["domains"] or "[]"))
+    H = defaultdict(lambda: {"keywords": set(), "countries": [], "hist": defaultdict(set), "ads": {},
+                             "products": [], "oldest": None})
+    for st in con.execute("SELECT * FROM stores ORDER BY name").fetchall():
+        if not is_keyword_source(st):
+            continue
+        S = store_state(con, st)
+        if not S:
+            continue
+        # anúncios por site em cada dia (última coleta do dia)
+        for run in S["daily"]:
+            for r in con.execute("""SELECT s.ad_id, ap.product_key FROM sightings s
+                                    JOIN ad_products ap ON ap.ad_id=s.ad_id AND ap.store_id=?
+                                    WHERE s.run_id=?""", (st["id"], run["id"])):
+                H[r["product_key"].split("/")[0]]["hist"][run["run_at"][:10]].add(r["ad_id"])
+        for row in products_of(S):
+            host = row["key"].split("/")[0]
+            h = H[host]
+            h["keywords"].add(st["name"])
+            if st["country"] not in h["countries"]:
+                h["countries"].append(st["country"])
+            h["products"].append(row)
+            for ad in row["ads"]:
+                h["ads"][ad["id"]] = dict(ad, loja=host)
+            if row["oldest"] is not None:
+                h["oldest"] = max(h["oldest"] or 0, row["oldest"])
+    out = []
+    for host, h in H.items():
+        if not h["ads"] or any(host == d or host.endswith("." + d) for d in monitored) \
+                or any(x in host for x in NOT_STORES):
+            continue
+        dates = sorted(h["hist"])
+        series = [len(h["hist"][d]) for d in dates]
+        cur = len(h["ads"])
+        k = min(3, len(series) - 1)
+        base = series[-1 - k] if k > 0 else None
+        growth = (cur - base) if base is not None else 0
+        scaling = [p for p in h["products"] if p["scale"]]
+        # penaliza só sites que não levam a nenhuma página além da inicial, ou subdomínios de conteúdo
+        content = re.match(r"(info|information|news|blog|read|article|articles|stories|magazine)\.", host)
+        has_products = not content and any(p["key"].split("/", 1)[1].strip("/") for p in h["products"])
+        if cur < 2:
+            continue
+        score = 10 * len(scaling) + 2 * max(growth, 0) + 5 * (len(h["keywords"]) - 1) + cur + (3 if has_products else -5)
+        reasons = []
+        if scaling:
+            reasons.append(f"{len(scaling)} produto{'s' if len(scaling) > 1 else ''} escalando")
+        if base is not None and growth > 0:
+            reasons.append(f"anúncios {base} → {cur} em {k} coleta{'s' if k > 1 else ''}")
+        if len(h["keywords"]) > 1:
+            reasons.append(f"aparece em {len(h['keywords'])} palavras-chave")
+        reasons.append(f"{cur} anúncios na amostra")
+        if h["oldest"]:
+            reasons.append(f"anúncio mais antigo: {h['oldest']} dia{'s' if h['oldest'] != 1 else ''}")
+        prods = sorted(h["products"], key=lambda p: (-(p["scale"] is not None), -p["active"]))
+        ads = sorted(h["ads"].values(), key=lambda x: (x["rank"] if x["rank"] is not None else 10**6, -x["dup"]))
+        out.append({"host": host, "name": suggestion_name(host), "keywords": sorted(h["keywords"]),
+                    "country": h["countries"][0], "score": score, "reasons": reasons, "active": cur,
+                    "growth": growth if base is not None else None, "scaling": len(scaling),
+                    "n_products": len(h["products"]), "oldest": h["oldest"], "has_products": has_products,
+                    "history": [{"date": d, "n": n} for d, n in zip(dates, series)],
+                    "products": [{"name": p["name"], "active": p["active"], "cover": p["cover"],
+                                  "scale": bool(p["scale"])} for p in prods[:4]],
+                    "ads": ads})
+    out.sort(key=lambda x: (-x["score"], -x["active"]))
+    out = out[:top]
+    for x in out:   # total de anúncios ativos na Biblioteca (último verificado)
+        t = con.execute("SELECT date, total FROM store_totals WHERE host=? ORDER BY date DESC LIMIT 1",
+                        (x["host"],)).fetchone()
+        x["total"], x["total_date"] = (t["total"], t["date"]) if t else (None, None)
+        if x["total"]:
+            i = next((n + 1 for n, r in enumerate(x["reasons"]) if "na amostra" in r), len(x["reasons"]))
+            x["reasons"].insert(i, f"~{x['total']:,} ativos na Biblioteca".replace(",", "."))
+    return out
+
+
+def cmd_suggest(con, a):
+    """Calcula as sugestões e, com --verify, consulta o total de anúncios ativos de cada loja sugerida
+    na Biblioteca (1 crédito por loja, só o campo de total da 1ª página)."""
+    sug = compute_suggestions(con, a.top)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if a.verify and sug:
+        if get_source(a) != "scrapecreators":
+            print("Verificação do total exige a fonte scrapecreators; pulando.", file=sys.stderr)
+        else:
+            for x in sug:
+                if con.execute("SELECT 1 FROM store_totals WHERE host=? AND date=?", (x["host"], today)).fetchone():
+                    continue                                   # já verificada hoje
+                try:
+                    d = sc()._call("search/ads", {"query": x["host"], "country": x["country"], "status": "ACTIVE"})
+                    total = d.get("searchResultsCount")
+                    con.execute("INSERT OR REPLACE INTO store_totals VALUES(?,?,?,?)",
+                                (x["host"], today, x["country"], total))
+                    con.commit()
+                except Exception as e:
+                    print(f"  não consegui verificar {x['host']}: {e}", file=sys.stderr)
+            sug = compute_suggestions(con, a.top)
+            print(f"Créditos ScrapeCreators usados na verificação: {_SC.credits_used if _SC else 0}", file=sys.stderr)
+    for i, x in enumerate(sug, 1):
+        print(f"{i:>2}. {x['host']} · pontos {x['score']} · {' · '.join(x['reasons'])}", file=sys.stderr)
+
+
 def cmd_report(con, a):
     import csv
     stores = [get_store(con, n) for n in a.store] if a.store else con.execute("SELECT * FROM stores ORDER BY name").fetchall()
@@ -1036,6 +1158,11 @@ def cmd_report(con, a):
         lines += [f"📊 **Planilha interativa:** {os.environ['PAINEL_URL']}", ""]
     for st in stores:
         lines += report_store(con, st, a, csv_rows)
+    sug = compute_suggestions(con, 10)
+    if sug:
+        lines += ["## 💡 Lojas sugeridas para monitorar", "",
+                  "_Lojas encontradas nas buscas por palavra-chave que ainda não são monitoradas._", ""]
+        lines += [f"{i}. **{x['host']}** — {' · '.join(x['reasons'])}" for i, x in enumerate(sug, 1)] + [""]
     md = "\n".join(lines)
     if a.out:
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
@@ -1085,6 +1212,10 @@ def cmd_painel(con, a):
             covers.update(x for x in [r["cover"]] + [ad["cover"] for ad in r["ads"]] if x)
             data["products"].append(r)
     data["stores"].sort(key=lambda x: (x["kind"] == "keyword", x["name"].lower()))   # lojas primeiro
+    data["suggestions"] = compute_suggestions(con, 10)
+    data["repo"] = os.environ.get("GITHUB_REPOSITORY", "")
+    for x in data["suggestions"]:
+        covers.update(c for c in [p["cover"] for p in x["products"]] + [ad["cover"] for ad in x["ads"]] if c)
     os.makedirs(a.out, exist_ok=True)
     for c in covers:                                          # só as capas usadas na planilha
         dst = os.path.join(a.out, c)
@@ -1135,6 +1266,10 @@ def main():
     scraping_opts(sp)
 
     sub.add_parser("list")
+    sp = sub.add_parser("suggest", help="sugere lojas vistas nas palavras-chave (--verify: total na Biblioteca)")
+    sp.add_argument("--top", type=int, default=10)
+    sp.add_argument("--verify", action="store_true", help="1 crédito por loja: total de anúncios ativos")
+    sp.add_argument("--source", choices=["scrapecreators", "browser"])
     sp = sub.add_parser("painel", help="gera a planilha interativa (site para o GitHub Pages)")
     sp.add_argument("--out", default="site")
     sp = sub.add_parser("rekey", help="reagrupa produtos de todo o histórico com as regras atuais")
@@ -1161,7 +1296,7 @@ def main():
 
     a = p.parse_args()
     con = db_open(a.data_dir)
-    {"add": cmd_add, "resolve": cmd_resolve, "list": cmd_list, "sync": cmd_sync, "rekey": cmd_rekey, "painel": cmd_painel, "remove": cmd_remove,
+    {"add": cmd_add, "resolve": cmd_resolve, "list": cmd_list, "sync": cmd_sync, "rekey": cmd_rekey, "painel": cmd_painel, "suggest": cmd_suggest, "remove": cmd_remove,
      "run": cmd_run, "report": cmd_report}[a.cmd](con, a)
 
 

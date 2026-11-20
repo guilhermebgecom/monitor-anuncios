@@ -56,6 +56,11 @@ jobs:
       - name: Reagrupar produtos do histórico (regras atuais)
         run: python scripts/monitor.py rekey
 
+      - name: Sugerir lojas e verificar o total de anúncios delas (1 crédito por loja)
+        if: ${{ !inputs.so_planilha }}
+        continue-on-error: true
+        run: python scripts/monitor.py suggest --verify --top 10 --source scrapecreators
+
       - name: Gerar relatório
         if: ${{ !inputs.so_planilha }}
         run: |

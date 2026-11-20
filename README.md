@@ -77,9 +77,13 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 - Os links diretos de imagem/vídeo do Facebook **não** são guardados: eles expiram em poucos dias e contêm códigos longos que a proteção do GitHub confunde com senhas.
 - Crescimento estimado da pasta: ~15–25 MB na primeira coleta e ~1–3 MB por dia depois. Se ficar grande, dá para reduzir o tamanho das miniaturas.
 
+## Sugestões de lojas
+
+A aba **Sugestões** da planilha mostra as **10 lojas** encontradas nas buscas por palavra-chave que ainda não são monitoradas, ordenadas por sinais de escala (produtos escalando, crescimento de anúncios, presença em várias palavras-chave, volume na amostra). Marketplaces e redes sociais ficam de fora. Para cada sugerida, o robô consulta o **total de anúncios ativos na Biblioteca** (1 crédito por loja por dia). Para passar a monitorar uma loja: **Copiar para lojas.json** → **Editar lojas.json** → cole a linha e salve.
+
 ## Custos
 
-- **ScrapeCreators:** ~14 créditos por loja ou palavra-chave por dia (150 anúncios). Com 6 entradas (4 lojas + 2 palavras-chave): ~84/dia, ~2.500/mês, **~US$ 4,70/mês** (o pacote de US$ 47 dura ~10 meses). Cada entrada nova soma ~US$ 0,80/mês.
+- **ScrapeCreators:** ~14 créditos por loja ou palavra-chave por dia (150 anúncios). Com 6 entradas (4 lojas + 2 palavras-chave): ~84/dia, ~2.500/mês, **~US$ 4,70/mês** (o pacote de US$ 47 dura ~10 meses). Cada entrada nova soma ~US$ 0,80/mês. A verificação das 10 sugestões soma ~10 créditos/dia (~US$ 0,55/mês).
 - **GitHub Actions:** cada coleta leva poucos minutos (a primeira com capas, um pouco mais); cabe com folga nos 2.000 minutos/mês gratuitos de repositórios privados.
 - O consumo de créditos de cada dia aparece no log da execução ("Créditos ScrapeCreators usados nesta coleta").
 

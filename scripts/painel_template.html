@@ -136,6 +136,21 @@
   #pop a:hover { background: var(--surface-2); }
   #pop a span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #pop a span:last-child { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .sgrid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+  .sug .rk { position: absolute; top: 12px; right: 14px; color: var(--muted); font-weight: 700; font-size: 13px; }
+  .sug .host { font-weight: 700; font-size: 15px; color: var(--text); text-decoration: none; word-break: break-all; }
+  .sug .host:hover { text-decoration: underline; }
+  .sug .kws { color: var(--muted); font-size: 12px; margin: 2px 0 8px; }
+  .sug ul { margin: 0 0 10px; padding-left: 18px; font-size: 13px; }
+  .sug ul li { margin: 1px 0; }
+  .sug .prods { display: flex; gap: 8px; margin-bottom: 8px; }
+  .sug .prods .thumb { width: 64px; height: 64px; }
+  .sug .pl { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .sug .pl b { color: var(--text); font-weight: 600; }
+  .sug .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .sug .first { color: var(--muted); font-size: 12px; padding: 8px 0 4px; }
+  a.btn { text-decoration: none; display: inline-block; }
+  .btn.ok { border-color: var(--up); color: var(--up); }
 </style>
 </head>
 <body>
@@ -148,6 +163,7 @@
     <div class="tabs" role="tablist">
       <button class="tab on" data-tab="produtos">Produtos anunciados <span class="n" id="n-produtos"></span></button>
       <button class="tab" data-tab="evolucao">Evolução <span class="n" id="n-evolucao"></span></button>
+      <button class="tab" data-tab="sugestoes">Sugestões <span class="n" id="n-sugestoes"></span></button>
     </div>
     <span class="spacer"></span>
     <select id="f-store" aria-label="Loja"></select>
@@ -173,6 +189,14 @@
     <div class="grid" id="grid"></div>
     <div class="panel empty-state" id="e-empty" hidden>Nenhum produto em aumento rápido nesta coleta.
       Os sinais aparecem conforme o histórico cresce (a partir da 2ª coleta).</div>
+  </section>
+
+  <section id="tab-sugestoes" hidden>
+    <p class="hint">Lojas encontradas nas <b>buscas por palavra-chave</b> que ainda não são monitoradas, ordenadas por sinais
+      de escala: produtos escalando, crescimento de anúncios, presença em várias palavras-chave e volume na amostra.
+      Para monitorar uma loja, clique em <b>Copiar para lojas.json</b> e cole a linha no arquivo (botão <b>Editar lojas.json</b>).</p>
+    <div class="grid sgrid" id="sgrid"></div>
+    <div class="panel empty-state" id="s-empty" hidden></div>
   </section>
 </div>
 
@@ -369,14 +393,58 @@ function renderModal() {
     </div>`).join("");
 }
 
+function sugFiltered() {
+  const sel = DATA.stores.find(s => s.name === state.store);
+  if (sel && sel.kind !== "keyword") return null;          // loja monitorada selecionada: não se aplica
+  const q = state.q.trim().toLowerCase();
+  return (DATA.suggestions || []).filter(x => (!state.store || x.keywords.includes(state.store)) &&
+    (!q || x.host.includes(q) || x.products.some(p => p.name.toLowerCase().includes(q))));
+}
+const sugLine = (x) => `{"nome": "${x.name}", "site": "${x.host}", "pais": "${x.country || "US"}"},`;
+
+function renderSugestoes() {
+  const list = sugFiltered(), empty = $("#s-empty");
+  if (list === null) {
+    $("#sgrid").innerHTML = ""; empty.hidden = false;
+    empty.textContent = "As sugestões vêm das buscas por palavra-chave. Escolha \"Todas\" ou uma palavra-chave no filtro.";
+    return;
+  }
+  empty.hidden = list.length > 0;
+  empty.textContent = (DATA.suggestions || []).length ? "Nenhuma sugestão para este filtro."
+    : "Ainda não há sugestões: elas aparecem quando houver buscas por palavra-chave com lojas que você não monitora.";
+  const repo = DATA.repo;
+  $("#sgrid").innerHTML = list.map(x => {
+    const pos = DATA.suggestions.indexOf(x) + 1;
+    const prods = x.products.map(p => p.cover ? `<img class="thumb" src="${esc(p.cover)}" title="${esc(p.name)}" alt="" loading="lazy">` : "").join("");
+    const plist = x.products.map(p => `<b>${esc(p.name)}</b> (${p.active})${p.scale ? " 🚀" : ""}`).join(" · ");
+    return `<div class="card sug">
+      <span class="rk">#${pos}</span>
+      <a class="host" href="https://${esc(x.host)}" target="_blank" rel="noopener noreferrer">${esc(x.host)}</a>
+      <div class="kws">🔎 ${x.keywords.map(esc).join(" · ")}</div>
+      <ul>${x.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
+      ${prods ? `<div class="prods">${prods}</div>` : ""}
+      <div class="pl">Principais produtos (${x.n_products}): ${plist}</div>
+      ${x.history.length > 1 ? chart(x.history) : `<div class="first">Gráfico de evolução a partir da 2ª coleta.</div>`}
+      <div class="actions">
+        <button class="btn" data-sug="${esc(x.host)}">Anúncios</button>
+        <button class="btn" data-copy="${esc(x.host)}">Copiar para lojas.json</button>
+        ${repo ? `<a class="btn" href="https://github.com/${esc(repo)}/edit/main/lojas.json" target="_blank" rel="noopener noreferrer">Editar lojas.json ↗</a>` : ""}
+      </div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll("#sgrid .chart").forEach(bindChart);
+}
+
 function render() {
   const f = filtered();
   $("#n-produtos").textContent = f.length;
   $("#n-evolucao").textContent = f.filter(p => p.scale).length;
+  const sf = sugFiltered(); $("#n-sugestoes").textContent = sf ? sf.length : "—";
+  $("#tab-sugestoes").hidden = state.tab !== "sugestoes";
   $("#tab-produtos").hidden = state.tab !== "produtos";
   $("#tab-evolucao").hidden = state.tab !== "evolucao";
   document.querySelectorAll("[data-tab]").forEach(b => b.classList.toggle("on", b.dataset.tab === state.tab));
-  if (state.tab === "produtos") renderTable(); else renderEvolucao();
+  if (state.tab === "produtos") renderTable(); else if (state.tab === "evolucao") renderEvolucao(); else renderSugestoes();
 }
 
 const pop = $("#pop"); let popFor = null, popTimer = null, popAt = 0, lastTouch = 0;
@@ -414,8 +482,20 @@ document.addEventListener("click", (ev) => {
   if (!ev.target.closest("#pop")) hidePop(0);
 });
 document.addEventListener("click", (ev) => {
-  const t = ev.target.closest("[data-tab],[data-k],[data-open],[data-msort],#m-close");
+  const t = ev.target.closest("[data-tab],[data-k],[data-open],[data-msort],[data-sug],[data-copy],#m-close");
   if (!t) return;
+  if (t.dataset.sug) {
+    const x = DATA.suggestions.find(y => y.host === t.dataset.sug);
+    state.modal = { name: x.host, store: x.keywords.join(", "), kind: "keyword", loja: x.host, lojas: [], ads: x.ads, active: x.ads.length };
+    state.msort = "rank"; renderModal(); $("#modal").showModal(); return;
+  }
+  if (t.dataset.copy) {
+    const x = DATA.suggestions.find(y => y.host === t.dataset.copy), line = sugLine(x);
+    const done = () => { const old = t.textContent; t.textContent = "Copiado ✓"; t.classList.add("ok");
+                         setTimeout(() => { t.textContent = old; t.classList.remove("ok"); }, 2000); };
+    (navigator.clipboard ? navigator.clipboard.writeText(line) : Promise.reject()).then(done, () => window.prompt("Copie a linha abaixo e cole no lojas.json:", line));
+    return;
+  }
   if (t.dataset.tab) { state.tab = t.dataset.tab; render(); }
   else if (t.dataset.k) { const k = t.dataset.k;
     state.dir = state.sort === k ? -state.dir : (k === "name" || k === "loja" || k === "since" ? 1 : -1);
