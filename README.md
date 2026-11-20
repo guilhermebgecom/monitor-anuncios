@@ -12,6 +12,7 @@ Roda sozinho no **GitHub Actions** (todo dia às 07:23 de Brasília) e salva tud
 | `relatorios/ultimo.md` | Relatório da coleta mais recente |
 | `relatorios/AAAA-MM-DD.md` | Relatório de cada dia |
 | `relatorios/csv/` | `produtos.csv` (situação atual), `historico.csv` (produto × dia), `anuncios.csv` (anúncios ativos) |
+| `criativos/<loja>/<id>.jpg` | Miniatura da capa de cada anúncio (imagem ou quadro inicial do vídeo), salva no dia em que o anúncio aparece |
 | `dados/monitor.db` | Histórico completo (SQLite) — não apague |
 | `scripts/` | Código do monitor |
 | `.github/workflows/monitor.yml` | Agendamento diário |
@@ -52,10 +53,18 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 - `pais`: código de 2 letras do mercado (`US`, `BR`, `GB`...) ou `ALL`.
 - Remover uma loja do arquivo **não** apaga o histórico dela, mas ela continua sendo coletada até ser removida do banco: peça ao Claude ("pare de monitorar a loja X") ou rode `python scripts/monitor.py remove --name "Loja X"` com `ADS_MONITOR_DIR=dados`.
 
+## Criativos
+
+- Para cada anúncio novo, o robô salva a **imagem de capa** em miniatura (até 320 px, ~15–30 KB) na pasta `criativos/`. O relatório mostra essas miniaturas.
+- O texto, título, botão, formato e link de destino de cada anúncio ficam no banco e em `relatorios/csv/anuncios.csv`.
+- Para ver o anúncio completo (vídeo, carrossel), use o link **"ver anúncio"** do relatório: ele abre a Biblioteca de Anúncios e é permanente.
+- Os links diretos de imagem/vídeo do Facebook **não** são guardados: eles expiram em poucos dias e contêm códigos longos que a proteção do GitHub confunde com senhas.
+- Crescimento estimado da pasta: ~15–25 MB na primeira coleta e ~1–3 MB por dia depois. Se ficar grande, dá para reduzir o tamanho das miniaturas.
+
 ## Custos
 
 - **ScrapeCreators:** ~30 créditos por loja por dia (300 anúncios ≈ 30 chamadas). Com 3 lojas: ~90/dia, ~2.700/mês, **~US$ 5/mês** (o pacote de US$ 47 dura ~9 meses). Cada loja nova soma ~US$ 1,70/mês.
-- **GitHub Actions:** cada coleta leva poucos minutos; cabe com folga nos 2.000 minutos/mês gratuitos de repositórios privados.
+- **GitHub Actions:** cada coleta leva poucos minutos (a primeira com capas, um pouco mais); cabe com folga nos 2.000 minutos/mês gratuitos de repositórios privados.
 - O consumo de créditos de cada dia aparece no log da execução ("Créditos ScrapeCreators usados nesta coleta").
 
 ## Mudar horário ou tamanho da amostra
@@ -73,4 +82,5 @@ Abra uma sessão do Claude com este repositório e pergunte, por exemplo: "o que
 - **Execução falhou em "Verificar chave da API":** o secret `SCRAPECREATORS_API_KEY` não foi criado (passo 3).
 - **Falhou em "Salvar no repositório" (permission denied / 403):** falta a permissão de escrita (passo 4).
 - **"Créditos da ScrapeCreators esgotados":** recarregue os créditos; o histórico não se perde, só aquele dia fica sem coleta.
+- **Falhou em "Salvar no repositório" com "Push cannot contain secrets":** a proteção do GitHub achou algo parecido com uma senha. Abra o link que aparece no log, veja o trecho apontado e decida: se for um falso alarme, marque como tal no próprio GitHub; se tiver dúvida, peça ajuda ao Claude.
 - **Uma loja veio com 0 anúncios:** a coleta é marcada como vazia e ignorada nos relatórios; confira se o domínio em `lojas.json` está certo.

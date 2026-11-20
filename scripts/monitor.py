@@ -24,6 +24,8 @@ import re
 import os
 import sqlite3
 import sys
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, unquote, urlparse
@@ -64,6 +66,10 @@ def db_open(path):
     con.executescript(SCHEMA)
     try:  # bancos criados antes da coluna existir
         con.execute("ALTER TABLE runs ADD COLUMN capped INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:  # caminho da imagem de capa do anúncio (criativos/<loja>/<id>.jpg)
+        con.execute("ALTER TABLE ads ADD COLUMN cover TEXT")
     except sqlite3.OperationalError:
         pass
     return con
@@ -266,6 +272,105 @@ def ad_media(ad):
         if i.get("originalImageUrl") or i.get("resizedImageUrl"):
             return i.get("originalImageUrl") or i.get("resizedImageUrl")
     return None
+
+
+def cover_url(ad):
+    """URL da imagem de capa: quadro do vídeo, imagem do anúncio ou do 1º card. Expira em poucos dias."""
+    s = ad.get("snapshot") or {}
+    for v in s.get("videos") or []:
+        if v.get("videoPreviewImageUrl"):
+            return v["videoPreviewImageUrl"]
+    for i in s.get("images") or []:
+        if i.get("resizedImageUrl") or i.get("originalImageUrl"):
+            return i.get("resizedImageUrl") or i.get("originalImageUrl")
+    for c in s.get("cards") or []:
+        for f in ("videoPreviewImageUrl", "resizedImageUrl", "originalImageUrl"):
+            if c.get(f):
+                return c[f]
+    return None
+
+
+def slim_ad(ad):
+    """Guarda só o que o monitor usa. Ficam de fora os links de mídia do Facebook (expiram em dias
+    e trazem códigos longos de acesso). O criativo fica preservado pela capa salva e pelo link
+    permanente da Biblioteca de Anúncios."""
+    s = ad.get("snapshot") or {}
+    card_fields = ("title", "body", "linkUrl", "linkDescription", "caption", "ctaText", "ctaType")
+    texts = []
+    for t in s.get("extraTexts") or []:
+        t = t.get("text") if isinstance(t, dict) else t
+        if isinstance(t, str) and t.strip():
+            texts.append(t)
+    snap = {k: s.get(k) for k in ("title", "caption", "ctaText", "ctaType", "displayFormat", "linkUrl",
+                                 "linkDescription", "pageName") if s.get(k) is not None}
+    snap["body"] = {"text": (s.get("body") or {}).get("text")}
+    snap["cards"] = [{k: c.get(k) for k in card_fields if c.get(k) is not None} for c in s.get("cards") or []]
+    if texts:
+        snap["extraTexts"] = texts
+    out = {k: ad.get(k) for k in ("adArchiveID", "pageID", "pageName", "isActive", "startDate", "endDate",
+                                 "startDateFormatted", "endDateFormatted", "collationCount", "collationId",
+                                 "publisherPlatform", "displayFormat") if ad.get(k) is not None}
+    out["snapshot"] = snap
+    return out
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-") or "loja"
+
+
+def download_cover(url, path, max_px=320):
+    """Baixa a capa e salva como miniatura JPEG (~10–30 KB). Usa Pillow se instalado."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = r.read(8_000_000)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(data)).convert("RGB")
+        img.thumbnail((max_px, max_px))
+        img.save(path, "JPEG", quality=72, optimize=True)
+    except ImportError:
+        open(path, "wb").write(data)
+    return path
+
+
+def save_covers(con, store, fresh, a):
+    """Baixa a capa de cada anúncio desta coleta que ainda não tem capa (na prática: os anúncios novos)."""
+    if a.no_covers:
+        return 0, 0
+    todo = []
+    for ad_id, ad in fresh.items():
+        row = con.execute("SELECT cover FROM ads WHERE ad_id=? AND store_id=?", (ad_id, store["id"])).fetchone()
+        url = cover_url(ad)
+        if url and not (row and row["cover"] and os.path.exists(row["cover"])):
+            todo.append((ad_id, url, os.path.join(a.covers_dir, slug(store["name"]), f"{ad_id}.jpg")))
+
+    def work(item):
+        ad_id, url, path = item
+        try:
+            return ad_id, download_cover(url, path)
+        except Exception:
+            return ad_id, None
+
+    ok = 0
+    with ThreadPoolExecutor(8) as ex:
+        for ad_id, path in ex.map(work, todo):
+            if path:
+                ok += 1
+                con.execute("UPDATE ads SET cover=? WHERE ad_id=? AND store_id=?", (path, ad_id, store["id"]))
+    return ok, len(todo) - ok
+
+
+def slim_stored(con):
+    """Enxuga anúncios já guardados (bancos criados antes do formato enxuto)."""
+    rows = con.execute("SELECT ad_id, store_id, data_json FROM ads WHERE data_json LIKE '%fbcdn%' "
+                       "OR media_url IS NOT NULL").fetchall()
+    for r in rows:
+        con.execute("UPDATE ads SET data_json=?, media_url=NULL WHERE ad_id=? AND store_id=?",
+                    (json.dumps(slim_ad(json.loads(r["data_json"] or "{}")), ensure_ascii=False),
+                     r["ad_id"], r["store_id"]))
+    return len(rows)
 
 
 def first_real(*vals):
@@ -538,7 +643,7 @@ def cmd_run(con, a):
                    first_real((s.get("body") or {}).get("text"), cards[0].get("body")),
                    s.get("ctaText") or cards[0].get("ctaText"),
                    next(iter(ad_links(ad)), None), ",".join(ad.get("publisherPlatform") or []),
-                   ad_media(ad), ad.get("collationCount"), json.dumps(ad, ensure_ascii=False))
+                   None, ad.get("collationCount"), json.dumps(slim_ad(ad), ensure_ascii=False))
             exists = con.execute("SELECT 1 FROM ads WHERE ad_id=? AND store_id=?", (ad_id, st["id"])).fetchone()
             if exists:
                 con.execute("""UPDATE ads SET page_id=?, page_name=?, start_date=?, end_date=?, format=?, title=?,
@@ -565,9 +670,16 @@ def cmd_run(con, a):
         if status == "ok" and ads and not capped:
             con.execute(f"""UPDATE ads SET is_active=0 WHERE store_id=? AND is_active=1
                             AND ad_id NOT IN ({','.join('?' * len(ads))})""", (st["id"], *ads.keys()))
+        got, failed = save_covers(con, st, {i: ad for i, (ad, _) in ads.items()}, a)
+        if got or failed:
+            print(f"  capas salvas: {got}" + (f" (falharam: {failed})" if failed else ""), file=sys.stderr)
         con.commit()
         print(f"  {len(ads)} anúncios ativos, {len(seen_products)} produtos/páginas de destino "
               f"(total informado pela Ad Library: {total}) [{status}]", file=sys.stderr)
+    n = slim_stored(con)
+    if n:
+        print(f"Formato enxuto aplicado a {n} anúncios já guardados.", file=sys.stderr)
+    con.commit()
     if _SC is not None:
         print(f"Créditos ScrapeCreators usados nesta coleta: {_SC.credits_used} · restantes: "
               f"{_SC.credits_remaining}", file=sys.stderr)
@@ -623,6 +735,14 @@ def report_store(con, st, a, csv_rows):
         k = rep(r["product_key"])
         first_run_of[k] = min(first_run_of.get(k, r["f"]), r["f"])
     run_date = {r["id"]: r["run_at"] for r in runs}
+    base_dir = os.path.dirname(os.path.abspath(a.out)) if getattr(a, "out", None) else os.getcwd()
+
+    def thumb(r, width=60):
+        cov = r["cover"]
+        if not cov or not os.path.exists(cov):
+            return ""
+        rel = os.path.relpath(os.path.abspath(cov), base_dir).replace(os.sep, "/")
+        return f'<img src="{rel}" width="{width}">'
     name = lambda k: names.get(k) or label_from_key(k)  # noqa: E731
     delta = lambda n, o: "" if prev is None else (f" ({n - o:+d})" if n != o else " (=)")  # noqa: E731
 
@@ -652,28 +772,33 @@ def report_store(con, st, a, csv_rows):
 
     # tabela de produtos
     out += ["### Produtos anunciados", "",
-            "| Produto | Anúncios ativos | Anúncio mais antigo (dias) | Monitorando desde |",
-            "|---|---:|---:|---|"]
+            "| Criativo | Produto | Anúncios ativos | Anúncio mais antigo (dias) | Monitorando desde |",
+            "|---|---|---:|---:|---|"]
     for k, n in sorted(pc.items(), key=lambda x: -x[1]):
-        starts = [ads_by_id[i]["start_date"] for i in cur_ads if k in ad_keys[i] and ads_by_id[i]["start_date"]]
+        mine = [ads_by_id[i] for i in cur_ads if k in ad_keys[i]]
+        starts = [r["start_date"] for r in mine if r["start_date"]]
         oldest = days_between(min(starts), now_ts) if starts else None
-        out.append(f"| {name(k)} <br><sub>{k}</sub> | {n}{delta(n, pp.get(k, 0))} | {oldest if oldest is not None else '—'}"
-                   f" | {run_date.get(first_run_of.get(k), '')[:10]} |")
+        # capa do anúncio mais antigo do produto que tenha imagem
+        with_cover = sorted((r for r in mine if thumb(r)), key=lambda r: r["start_date"] or now_ts)
+        img = thumb(with_cover[0], 60) if with_cover else ""
+        out.append(f"| {img} | {name(k)} <br><sub>{k}</sub> | {n}{delta(n, pp.get(k, 0))} | "
+                   f"{oldest if oldest is not None else '—'} | {run_date.get(first_run_of.get(k), '')[:10]} |")
         csv_rows["produtos"].append({"loja": st["name"], "data": cur["run_at"][:10], "produto": name(k),
                                      "chave": k, "anuncios_ativos": n,
                                      "variacao": (n - pp.get(k, 0)) if prev else "",
                                      "dias_anuncio_mais_antigo": oldest})
     no_link = [i for i in cur_ads if not ad_keys[i]]
     if no_link:
-        out.append(f"| _(sem link de destino: WhatsApp, formulário, perfil…)_ | {len(no_link)} | | |")
+        out.append(f"| | _(sem link de destino: WhatsApp, formulário, perfil…)_ | {len(no_link)} | | |")
     out.append("")
 
     def ad_line(r, end_ts):
         txt = (r["title"] or r["body"] or "").replace("\n", " ")[:80]
         d = days_between(r["start_date"], end_ts)
         prods = ", ".join(name(k) for k in ad_keys[r["ad_id"]][:2]) or "—"
-        return (f"- {d if d is not None else '?'} dias · {r['format'] or ''} · {prods} · {txt} · "
-                f"[ver](https://www.facebook.com/ads/library/?id={r['ad_id']})")
+        img = thumb(r, 70)
+        return (f"- {img + ' ' if img else ''}**{d if d is not None else '?'} dias** · {r['format'] or ''} · "
+                f"{prods} · {txt} · [ver anúncio](https://www.facebook.com/ads/library/?id={r['ad_id']})")
 
     out += ["### Anúncios há mais tempo no ar (prováveis vencedores)", ""]
     for r in sorted((ads_by_id[i] for i in cur_ads), key=lambda r: r["start_date"] or now_ts)[:a.top]:
@@ -715,7 +840,8 @@ def report_store(con, st, a, csv_rows):
             "inicio": datetime.fromtimestamp(r["start_date"], timezone.utc).strftime("%Y-%m-%d") if r["start_date"] else "",
             "dias_no_ar": days_between(r["start_date"], now_ts), "visto_primeiro_em": r["first_seen"][:10],
             "versoes": r["collation_count"], "formato": r["format"], "plataformas": r["platforms"],
-            "titulo": r["title"], "texto": r["body"], "cta": r["cta"], "link": r["link_url"], "midia": r["media_url"]})
+            "titulo": r["title"], "texto": r["body"], "cta": r["cta"], "link": r["link_url"],
+            "capa": r["cover"] or ""})
     return out
 
 
@@ -791,6 +917,9 @@ def main():
     sp = sub.add_parser("run")
     sp.add_argument("--store", action="append", default=[], help="só estas lojas (padrão: todas)")
     sp.add_argument("--as-of", help=argparse.SUPPRESS)  # data simulada, para testes
+    sp.add_argument("--covers-dir", default=os.environ.get("ADS_COVERS_DIR", "criativos"),
+                    help="pasta das imagens de capa (padrão: criativos)")
+    sp.add_argument("--no-covers", action="store_true", help="não baixar imagens de capa")
     scraping_opts(sp)
 
     sp = sub.add_parser("report")
