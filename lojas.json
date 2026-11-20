@@ -1,5 +1,8 @@
 [
   {"nome": "Alessntials", "site": "m.alessntials.com", "pais": "US"},
   {"nome": "Lifesparking", "site": "m.lifesparking.com", "pais": "US"},
-  {"nome": "Sakerplus", "site": "m.sakerplus.com", "pais": "US"}
+  {"nome": "Sakerplus", "site": "m.sakerplus.com", "pais": "US"},
+  {"nome": "Eigoods", "site": "m.eigoods.com", "pais": "US"},
+  {"nome": "Car gadget free shipping", "palavra_chave": "car gadget free shipping", "pais": "US"},
+  {"nome": "Tool gadget free shipping", "palavra_chave": "tool gadget free shipping", "pais": "US"}
 ]

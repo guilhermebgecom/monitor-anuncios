@@ -72,6 +72,11 @@ def db_open(path):
         con.execute("ALTER TABLE sightings ADD COLUMN rank INTEGER")
     except sqlite3.OperationalError:
         pass
+    for col in ("keywords TEXT DEFAULT '[]'", "exact INTEGER DEFAULT 0"):  # buscas por palavra-chave
+        try:
+            con.execute(f"ALTER TABLE stores ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     try:  # caminho da imagem de capa do anúncio (criativos/<loja>/<id>.jpg)
         con.execute("ALTER TABLE ads ADD COLUMN cover TEXT")
     except sqlite3.OperationalError:
@@ -404,7 +409,7 @@ def get_store(con, name):
 SORT_API = {"impressions": "total_impressions", "recent": "relevancy_monthly_grouped"}
 
 
-def fetch_target(kind, value, country, a, max_ads=None):
+def fetch_target(kind, value, country, a, max_ads=None, exact=False):
     """kind: 'page' (ID da página), 'keyword' (termo/domínio) ou 'url' (link da Ad Library).
     Retorna (anúncios normalizados, total informado, capped)."""
     max_ads = a.max_ads if max_ads is None else max_ads
@@ -418,13 +423,16 @@ def fetch_target(kind, value, country, a, max_ads=None):
                 return fetch_target("keyword", q["q"][0], c, a, max_ads)
             raise RuntimeError(f"URL sem view_all_page_id nem q (não dá para usar na API): {value}")
         print(f"  [api] {kind}: {value} ({country})", file=sys.stderr)
-        call = sc().company_ads if kind == "page" else sc().search_ads
-        raw, total, capped = call(value, country=country, sort_by=SORT_API.get(a.sort), max_ads=max_ads)
+        if kind == "page":
+            raw, total, capped = sc().company_ads(value, country=country, sort_by=SORT_API.get(a.sort), max_ads=max_ads)
+        else:
+            raw, total, capped = sc().search_ads(value, country=country, sort_by=SORT_API.get(a.sort),
+                                                 exact=exact, max_ads=max_ads)
         label = f"scrapecreators:{kind}:{value}:{country}"
     else:
         url = value if kind == "url" else build_url(
             page_id=value if kind == "page" else None, keyword=value if kind == "keyword" else None,
-            country=country, status="active", sort=a.sort)
+            country=country, status="active", sort=a.sort, exact=exact)
         raw, total = scrape_ads.scrape(url, max_ads, False, a.headful, a.max_idle, a.chromium_path)
         capped = bool(max_ads) and len(raw) >= max_ads
         label = url
@@ -500,16 +508,22 @@ def cmd_sync(con, a):
         domains = [store_domain(d) for d in sites]
         page_ids = [str(x) for x in l.get("page_ids") or []]
         urls = l.get("urls") or []
+        kws = l.get("palavra_chave") or l.get("palavras_chave") or l.get("keyword") or l.get("keywords") or []
+        kws = [kws] if isinstance(kws, str) else kws
+        exact = int(bool(l.get("frase_exata") or l.get("exact")))
         country = (l.get("pais") or l.get("country") or "US").upper()
         old = con.execute("SELECT * FROM stores WHERE lower(name)=lower(?)", (name,)).fetchone()
         if old:
-            con.execute("UPDATE stores SET page_ids=?, urls=?, domains=?, country=? WHERE id=?",
-                        (json.dumps(page_ids), json.dumps(urls), json.dumps(domains), country, old["id"]))
+            con.execute("UPDATE stores SET page_ids=?, urls=?, domains=?, country=?, keywords=?, exact=? WHERE id=?",
+                        (json.dumps(page_ids), json.dumps(urls), json.dumps(domains), country,
+                         json.dumps(kws), exact, old["id"]))
         else:
-            con.execute("INSERT INTO stores(name,page_ids,urls,domains,country,created_at) VALUES(?,?,?,?,?,?)",
+            con.execute("INSERT INTO stores(name,page_ids,urls,domains,country,created_at,keywords,exact) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
                         (name, json.dumps(page_ids), json.dumps(urls), json.dumps(domains), country,
-                         datetime.now(timezone.utc).isoformat()))
-        print(f"  {name}: sites={domains} páginas={page_ids} país={country}", file=sys.stderr)
+                         datetime.now(timezone.utc).isoformat(), json.dumps(kws), exact))
+        what = f"palavras-chave={kws}{' (frase exata)' if exact else ''}" if kws else f"sites={domains} páginas={page_ids}"
+        print(f"  {name}: {what} país={country}", file=sys.stderr)
     con.commit()
     known = {(l.get("nome") or l.get("name")).lower() for l in lojas}
     extra = [r["name"] for r in con.execute("SELECT name FROM stores") if r["name"].lower() not in known]
@@ -566,7 +580,9 @@ def cmd_list(con, a):
     if not rows:
         print("Nenhuma loja cadastrada.")
     for r in rows:
-        print(f"- {r['name']} | páginas {json.loads(r['page_ids'])} | sites {json.loads(r['domains'])} | "
+        kws = json.loads(r["keywords"] or "[]")
+        print(f"- {r['name']} | " + (f"palavras-chave {kws} | " if kws else "") +
+              f"páginas {json.loads(r['page_ids'])} | sites {json.loads(r['domains'])} | "
               f"urls {len(json.loads(r['urls']))} | {r['country']} | última coleta: {r['last_run'] or '—'} "
               f"({r['last_n'] if r['last_n'] is not None else '—'} anúncios)")
 
@@ -588,12 +604,15 @@ def collect(store, a):
     page_ids, urls, domains = (json.loads(store[k]) for k in ("page_ids", "urls", "domains"))
     # Domínio: busca o domínio na Ad Library e fica só com anúncios que levam para ele
     # (pega todas as páginas que anunciam a loja). Páginas/URLs: todos os anúncios delas.
-    targets = [("keyword", d, d) for d in domains]
-    targets += [("page", p, None) for p in page_ids] + [("url", u, None) for u in urls]
+    keywords = json.loads(store["keywords"] or "[]")
+    exact = bool(store["exact"])
+    targets = [("keyword", d, d, False) for d in domains]
+    targets += [("keyword", k, None, exact) for k in keywords]          # palavra-chave: qualquer anunciante
+    targets += [("page", p, None, False) for p in page_ids] + [("url", u, None, False) for u in urls]
     ads, total, ok, capped = {}, 0, True, False
-    for kind, value, dom in targets:
+    for kind, value, dom, ex in targets:
         try:
-            found, t, cap = fetch_target(kind, value, store["country"], a)
+            found, t, cap = fetch_target(kind, value, store["country"], a, exact=ex)
         except Exception as e:  # um alvo com erro não derruba a loja inteira
             print(f"  ERRO em {value}: {e}", file=sys.stderr)
             ok = False
@@ -799,7 +818,8 @@ def products_of(S):
 def report_store(con, st, a, csv_rows):
     """Resumo curto em Markdown (o detalhe fica na planilha interativa)."""
     S = store_state(con, st)
-    out = [f"## {st['name']}", ""]
+    kws = json.loads(st["keywords"] or "[]")
+    out = [f"## {'🔎 ' if kws else ''}{st['name']}" + (f" (palavra-chave: {', '.join(kws)})" if kws else ""), ""]
     if not S:
         return out + ["Ainda sem coletas.", ""]
     cur, prev = S["cur"], S["prev"]
@@ -871,14 +891,21 @@ def cmd_painel(con, a):
         if not S:
             continue
         rows = products_of(S)
-        data["stores"].append({"name": st["name"], "date": S["cur"]["run_at"][:10],
+        kws = json.loads(st["keywords"] or "[]")
+        is_kw = bool(kws) and not json.loads(st["domains"] or "[]") and not json.loads(st["page_ids"] or "[]")
+        data["stores"].append({"name": st["name"], "kind": "keyword" if is_kw else "store", "query": ", ".join(kws),
+                               "date": S["cur"]["run_at"][:10],
                                "prev": S["prev"]["run_at"][:10] if S["prev"] else None,
                                "sample": S["cur"]["n_ads"], "total": S["cur"]["total_reported"],
                                "products": len(rows), "runs": len(S["daily"])})
         for r in rows:
             r["store"] = st["name"]
+            r["kind"] = "keyword" if is_kw else "store"
+            # coluna "Loja": numa busca por palavra-chave mostra o site de quem anuncia
+            r["loja"] = r["key"].split("/")[0] if is_kw else st["name"]
             covers.update(x for x in [r["cover"]] + [ad["cover"] for ad in r["ads"]] if x)
             data["products"].append(r)
+    data["stores"].sort(key=lambda x: (x["kind"] == "keyword", x["name"].lower()))   # lojas primeiro
     os.makedirs(a.out, exist_ok=True)
     for c in covers:                                          # só as capas usadas na planilha
         dst = os.path.join(a.out, c)

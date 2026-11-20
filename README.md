@@ -1,6 +1,6 @@
 # Monitor de anúncios — Meta Ad Library
 
-Coleta todo dia os **150 anúncios de maior impressão** de cada loja listada em `lojas.json` (via API da ScrapeCreators), agrupa por produto e publica uma **planilha interativa** no GitHub Pages:
+Coleta todo dia os **150 anúncios de maior impressão** de cada loja e de cada **palavra-chave** listada em `lojas.json` (via API da ScrapeCreators), agrupa por produto e publica uma **planilha interativa** no GitHub Pages:
 
 - **Produtos anunciados:** criativo, produto, loja, anúncios ativos, variação, anúncio mais antigo (dias), monitorando desde, sinal de escala e o botão **Anúncios** (abre os links da Biblioteca de Anúncios daquele produto, ranqueados por posição em impressões ou por duplicações).
 - **Evolução:** só os produtos em aumento rápido (possível início de escala), com gráfico por produto: linha verde quando sobe, vermelha quando cai; passe o mouse para ver os valores de cada dia.
@@ -56,6 +56,16 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 
 - `site`: o domínio para onde os anúncios levam (com ou sem `m.`/`shop.`). Todo anúncio que leva para esse site entra, venha da página que vier.
 - `pais`: código de 2 letras do mercado (`US`, `BR`, `GB`...) ou `ALL`.
+
+**Palavras-chave** (anúncios de qualquer anunciante que usem o termo no texto):
+
+```json
+{"nome": "Car gadget free shipping", "palavra_chave": "car gadget free shipping", "pais": "US"}
+```
+
+- Por padrão as palavras podem aparecer em qualquer ordem. Para exigir a frase exata, acrescente `"frase_exata": true`.
+- Na planilha, a palavra-chave aparece no filtro (grupo "Palavras-chave") e a coluna **Loja** mostra o site de quem está anunciando cada produto.
+- Termos genéricos trazem anúncios sem relação; nomes de produto ou nicho funcionam melhor.
 - Remover uma loja do arquivo **não** apaga o histórico dela, mas ela continua sendo coletada até ser removida do banco: peça ao Claude ("pare de monitorar a loja X") ou rode `python scripts/monitor.py remove --name "Loja X"` com `ADS_MONITOR_DIR=dados`.
 
 ## Criativos
@@ -68,7 +78,7 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 
 ## Custos
 
-- **ScrapeCreators:** ~14 créditos por loja por dia (150 anúncios). Com 3 lojas: ~42/dia, ~1.300/mês, **~US$ 2,50/mês** (o pacote de US$ 47 dura ~1 ano e meio). Cada loja nova soma ~US$ 0,80/mês.
+- **ScrapeCreators:** ~14 créditos por loja ou palavra-chave por dia (150 anúncios). Com 6 entradas (4 lojas + 2 palavras-chave): ~84/dia, ~2.500/mês, **~US$ 4,70/mês** (o pacote de US$ 47 dura ~10 meses). Cada entrada nova soma ~US$ 0,80/mês.
 - **GitHub Actions:** cada coleta leva poucos minutos (a primeira com capas, um pouco mais); cabe com folga nos 2.000 minutos/mês gratuitos de repositórios privados.
 - O consumo de créditos de cada dia aparece no log da execução ("Créditos ScrapeCreators usados nesta coleta").
 
