@@ -725,7 +725,9 @@ def store_state(con, st):
                        (st["id"],)).fetchall()
     if not runs:
         return None
-    cur, prev = runs[-1], (runs[-2] if len(runs) > 1 else None)
+    # comparações são sempre entre dias: vale a última coleta de cada dia
+    daily = list({r["run_at"][:10]: r for r in runs}.values())
+    cur, prev = daily[-1], (daily[-2] if len(daily) > 1 else None)
     names = {r["product_key"]: r["name"] for r in
              con.execute("SELECT product_key, name FROM products WHERE store_id=?", (st["id"],))}
     by_name, reps = {}, {}
@@ -749,7 +751,7 @@ def store_state(con, st):
     sight = {r["ad_id"]: r for r in con.execute("SELECT * FROM sightings WHERE run_id=?", (cur["id"],))}
     prev_ads = {r["ad_id"] for r in con.execute("SELECT ad_id FROM sightings WHERE run_id=?", (prev["id"],))} \
         if prev else set()
-    return {"runs": runs, "cur": cur, "prev": prev, "counts": counts, "ads": ads_by_id, "ad_keys": ad_keys,
+    return {"runs": runs, "daily": daily, "cur": cur, "prev": prev, "counts": counts, "ads": ads_by_id, "ad_keys": ad_keys,
             "first_run_of": first_run_of, "sight": sight, "prev_ads": prev_ads,
             "name": lambda k: names.get(k) or label_from_key(k), "now_ts": ts_of(cur["run_at"]),
             "run_date": {r["id"]: r["run_at"] for r in runs}}
@@ -764,7 +766,7 @@ def products_of(S):
     for k, n in pc.items():
         mine = [S["ads"][i] for i in S["sight"] if k in S["ad_keys"][i]]
         starts = [r["start_date"] for r in mine if r["start_date"]]
-        daily = list({r["run_at"][:10]: r for r in S["runs"]}.values())   # última coleta de cada dia
+        daily = S["daily"]
         series = [S["counts"][r["id"]].get(k, 0) for r in daily]
         sig = scale_signal(series)
         ads = []
@@ -823,7 +825,7 @@ def report_store(con, st, a, csv_rows):
                                          "titulo": ad["title"],
                                          "link_ad_library": f"https://www.facebook.com/ads/library/?id={ad['id']}",
                                          "capa": ad["cover"] or ""})
-    for run in S["runs"]:
+    for run in S["daily"]:
         for k, n in S["counts"][run["id"]].items():
             csv_rows["historico"].append({"loja": st["name"], "data": run["run_at"][:10], "produto": S["name"](k),
                                           "chave": k, "anuncios_ativos": n})
@@ -872,7 +874,7 @@ def cmd_painel(con, a):
         data["stores"].append({"name": st["name"], "date": S["cur"]["run_at"][:10],
                                "prev": S["prev"]["run_at"][:10] if S["prev"] else None,
                                "sample": S["cur"]["n_ads"], "total": S["cur"]["total_reported"],
-                               "products": len(rows), "runs": len(S["runs"])})
+                               "products": len(rows), "runs": len(S["daily"])})
         for r in rows:
             r["store"] = st["name"]
             covers.update(x for x in [r["cover"]] + [ad["cover"] for ad in r["ads"]] if x)
