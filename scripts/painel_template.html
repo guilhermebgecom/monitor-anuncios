@@ -212,10 +212,13 @@ function header() {
     (kws.length ? `<optgroup label="Palavras-chave">${kws.map(opt).join("")}</optgroup>` : "");
 }
 
+const lojasTitle = (p) => (p.lojas || []).map(l => `${l.host} (${l.active} anúncio${l.active === 1 ? "" : "s"})`).join("\n") || p.loja;
+
 function filtered() {
   const q = state.q.trim().toLowerCase();
   return DATA.products.filter(p => (!state.store || p.store === state.store) &&
-    (!q || p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q) || (p.loja || "").toLowerCase().includes(q)));
+    (!q || p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q) || (p.loja || "").toLowerCase().includes(q) ||
+    (p.lojas || []).some(l => l.host.toLowerCase().includes(q))));
 }
 
 // larguras fixas: as colunas não mudam de posição quando aparece um selo em "Sinal"
@@ -245,7 +248,7 @@ function renderTable() {
     return `<tr>
       <td>${thumb(p.cover)}</td>
       <td><div class="pname">${esc(p.name)}</div><div class="pkey">${key}</div></td>
-      <td>${p.kind === "keyword" ? `<div class="loja-kw" title="${esc(p.loja)}">${esc(p.loja)}</div><div class="kwline" title="palavra-chave: ${esc(p.store)}">🔎 ${esc(p.store)}</div>` : esc(p.loja || p.store)}</td>
+      <td>${p.kind === "keyword" ? `<div class="loja-kw" title="${esc(lojasTitle(p))}">${esc(p.loja)}</div><div class="kwline" title="palavra-chave: ${esc(p.store)}">🔎 ${esc(p.store)}</div>` : esc(p.loja || p.store)}</td>
       <td class="num"><b>${p.active}</b></td>
       <td class="num">${deltaChip(p.delta)}</td>
       <td class="num">${p.oldest ?? "—"}</td>
@@ -322,7 +325,7 @@ function renderEvolucao() {
   $("#grid").innerHTML = rows.map(p => {
     const runs = p.history.length;
     return `<div class="card">
-      <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st">${p.kind === "keyword" ? `${esc(p.loja)} · 🔎 ${esc(p.store)}` : esc(p.store)}</div></div></div>
+      <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st" title="${esc(lojasTitle(p))}">${p.kind === "keyword" ? `${esc(p.loja)} · 🔎 ${esc(p.store)}` : esc(p.store)}</div></div></div>
       <div class="kpi"><b>${p.active}</b><span>anúncios ativos</span><span class="chip scale" title="de ${p.scale.base} para ${p.active} anúncios">▲ +${p.scale.gain} em ${Math.min(3, runs - 1)} coleta${Math.min(3, runs - 1) > 1 ? "s" : ""}</span></div>
       ${chart(p.history)}
       <div class="actions"><button class="btn" data-open="${esc(p.store)}|${esc(p.key)}">Anúncios</button></div>
@@ -337,14 +340,14 @@ function renderModal() {
     ? (a, b) => b.dup - a.dup || (a.rank ?? 1e9) - (b.rank ?? 1e9)
     : (a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || b.dup - a.dup);
   $("#m-title").textContent = p.name;
-  $("#m-sub").textContent = `${p.kind === "keyword" ? p.loja + " · 🔎 " + p.store : p.store} · ${p.ads.length} anúncio(s) ativo(s) na amostra · posição = ranking de impressões na Biblioteca de Anúncios`;
+  $("#m-sub").textContent = `${p.kind === "keyword" ? ((p.lojas || []).length > 1 ? p.lojas.map(l => l.host).join(", ") : p.loja) + " · 🔎 " + p.store : p.store} · ${p.ads.length} anúncio(s) ativo(s) na amostra · posição = ranking de impressões na Biblioteca de Anúncios`;
   document.querySelectorAll("[data-msort]").forEach(b => b.classList.toggle("on", b.dataset.msort === state.msort));
   $("#m-list").innerHTML = ads.map((ad, i) => `<div class="ad">
       <div class="pos">${i + 1}</div>${thumb(ad.cover)}
       <div class="t"><div class="tt">${esc(ad.title || "(sem título)")}</div>
         <div class="meta">
           <span>#${ad.rank ?? "—"} em impressões</span>·<span>${ad.dup} duplicaç${ad.dup === 1 ? "ão" : "ões"}</span>·
-          <span>${ad.days ?? "?"} dias no ar</span>·<span>${esc(ad.page || "")}</span>${ad.format ? `·<span>${esc(ad.format)}</span>` : ""}
+          <span>${ad.days ?? "?"} dias no ar</span>·${ad.loja && p.kind === "keyword" ? `<span><b>${esc(ad.loja)}</b></span>·` : ""}<span>${esc(ad.page || "")}</span>${ad.format ? `·<span>${esc(ad.format)}</span>` : ""}
           ${ad.new ? '<span class="chip new">novo</span>' : ""}
         </div></div>
       <a class="open" href="${lib(ad.id)}" target="_blank" rel="noopener noreferrer">Abrir na Biblioteca ↗</a>

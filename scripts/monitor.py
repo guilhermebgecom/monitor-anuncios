@@ -170,6 +170,8 @@ def clean_slug(slug, host=""):
             tokens, changed = tokens[1:], True
     while len(tokens) > 2:                                           # sufixos de variante: -7, -51, -v2, -qzw, -xy
         t = tokens[-1]
+        if tokens[-2] == "in":                                       # "2-in-1" faz parte do nome
+            break
         if re.fullmatch(r"\d{1,3}|v\d+", t) or (len(t) <= 4 and not re.search(r"[aeiou]", t) and t not in ACRONYMS):
             tokens = tokens[:-1]
         else:
@@ -815,6 +817,121 @@ def products_of(S):
     return rows
 
 
+# ---------- mesmo produto em lojas diferentes (buscas por palavra-chave) ----------
+
+NAME_STOP = {"for", "with", "and", "the", "of", "a", "an", "to", "in", "on", "new", "set", "pro", "kit",
+             "1", "2", "3", "4", "5", "upgraded", "premium", "original"}
+_HASH = {}
+
+
+def cover_hash(path):
+    """Assinatura da capa: dHash de 64 bits (forma) + cores médias numa grade 4x4 (cor).
+    Criativos iguais, mesmo com compressão/corte leve, batem nas duas."""
+    if path in _HASH:
+        return _HASH[path]
+    h = None
+    try:
+        from PIL import Image
+        img = Image.open(path).convert("RGB")
+        px = list(img.convert("L").resize((9, 8)).getdata())
+        v = 0
+        for r in range(8):
+            for c in range(8):
+                v = (v << 1) | (px[r * 9 + c] > px[r * 9 + c + 1])
+        if 8 <= bin(v).count("1") <= 56:        # ignora imagens "vazias" (preto, uma cor só)
+            h = (v, tuple(x for rgb in img.resize((4, 4)).getdata() for x in rgb))
+    except Exception:
+        pass
+    _HASH[path] = h
+    return h
+
+
+def _same_creative(x, y):
+    shape = bin(x[0] ^ y[0]).count("1") <= 4
+    color = sum(abs(a - b) for a, b in zip(x[1], y[1])) / len(x[1]) <= 18
+    return shape and color
+
+
+def same_product(a, b):
+    """Dois produtos de lojas diferentes são o mesmo? Criativo quase idêntico, ou nomes com 60%+ das
+    palavras em comum (e pelo menos 3). Validado em dados reais: junta shawl × scarf (mesmo vídeo),
+    não junta 'floor drain filter' × 'funnel with filter'."""
+    ha = {h for h in (cover_hash(x["cover"]) for x in a["ads"] if x["cover"]) if h is not None}
+    hb = {h for h in (cover_hash(x["cover"]) for x in b["ads"] if x["cover"]) if h is not None}
+    if any(_same_creative(x, y) for x in ha for y in hb):
+        return True
+    ta = {t for t in a["key"].split("/products/")[-1].split("-") if t and t not in NAME_STOP}
+    tb = {t for t in b["key"].split("/products/")[-1].split("-") if t and t not in NAME_STOP}
+    inter = ta & tb
+    return len(inter) >= 3 and len(inter) / len(ta | tb) >= 0.6
+
+
+def merge_across_stores(rows):
+    """Agrupa linhas de produto de sites diferentes que são o mesmo produto."""
+    n = len(rows)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    hosts = [r["key"].split("/")[0] for r in rows]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if hosts[i] != hosts[j] and find(i) != find(j) and same_product(rows[i], rows[j]):
+                parent[find(i)] = find(j)
+    groups = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(i)
+    out = []
+    for idx in groups.values():
+        mem = sorted((rows[i] for i in idx), key=lambda r: -r["active"])
+        top = dict(mem[0])
+        lojas = defaultdict(int)
+        for r in mem:
+            lojas[r["key"].split("/")[0]] += r["active"]
+        top["lojas"] = [{"host": h, "active": c} for h, c in sorted(lojas.items(), key=lambda x: -x[1])]
+        if len(mem) > 1:
+            ads, seen = [], set()
+            for r in mem:
+                for ad in r["ads"]:
+                    if ad["id"] not in seen:
+                        seen.add(ad["id"])
+                        ads.append(dict(ad, loja=r["key"].split("/")[0]))
+            ads.sort(key=lambda x: (x["rank"] if x["rank"] is not None else 10**6, -x["dup"]))
+            hist = defaultdict(int)
+            for r in mem:
+                for h in r["history"]:
+                    hist[h["date"]] += h["n"]
+            series = [hist[d] for d in sorted(hist)]
+            sig = scale_signal(series)
+            deltas = [r["delta"] for r in mem if r["delta"] is not None]
+            olds = [r["oldest"] for r in mem if r["oldest"] is not None]
+            top.update({"active": len(ads), "ads": ads, "delta": sum(deltas) if deltas else None,
+                        "oldest": max(olds) if olds else None,
+                        "since": min(r["since"] for r in mem if r["since"]) if any(r["since"] for r in mem) else "",
+                        "is_new": all(r["is_new"] for r in mem),
+                        "history": [{"date": d, "n": hist[d]} for d in sorted(hist)],
+                        "scale": {"gain": sig[0], "base": sig[1]} if sig else None,
+                        "keys": [r["key"] for r in mem]})
+        else:
+            top["ads"] = [dict(ad, loja=top["key"].split("/")[0]) for ad in top["ads"]]
+        out.append(top)
+    out.sort(key=lambda r: -r["active"])
+    return out
+
+
+def is_keyword_source(st):
+    return bool(json.loads(st["keywords"] or "[]")) and not json.loads(st["domains"] or "[]") \
+        and not json.loads(st["page_ids"] or "[]")
+
+
+def rows_for(st, S):
+    rows = products_of(S)
+    return merge_across_stores(rows) if is_keyword_source(st) else rows
+
+
 def report_store(con, st, a, csv_rows):
     """Resumo curto em Markdown (o detalhe fica na planilha interativa)."""
     S = store_state(con, st)
@@ -823,7 +940,7 @@ def report_store(con, st, a, csv_rows):
     if not S:
         return out + ["Ainda sem coletas.", ""]
     cur, prev = S["cur"], S["prev"]
-    rows = products_of(S)
+    rows = rows_for(st, S)
     n_prev = len(S["counts"][prev["id"]]) if prev else None
     out += [f"Coleta: **{cur['run_at'][:10]}**" + (f" · comparada com {prev['run_at'][:10]}" if prev else ""), "",
             f"- **Anúncios na amostra:** {cur['n_ads']} (a Biblioteca indica ~{cur['total_reported']} ativos)",
@@ -837,7 +954,8 @@ def report_store(con, st, a, csv_rows):
                                      "chave": r["key"], "anuncios_ativos": r["active"],
                                      "variacao": r["delta"] if r["delta"] is not None else "",
                                      "dias_anuncio_mais_antigo": r["oldest"], "monitorando_desde": r["since"],
-                                     "possivel_escala": "sim" if r["scale"] else ""})
+                                     "possivel_escala": "sim" if r["scale"] else "",
+                                     "sites": ", ".join(f"{l['host']} ({l['active']})" for l in r.get("lojas", []))})
         for ad in r["ads"]:
             csv_rows["anuncios"].append({"loja": st["name"], "produto": r["name"], "ad_id": ad["id"],
                                          "posicao_impressoes": ad["rank"], "duplicacoes": ad["dup"],
@@ -890,9 +1008,9 @@ def cmd_painel(con, a):
         S = store_state(con, st)
         if not S:
             continue
-        rows = products_of(S)
+        rows = rows_for(st, S)
         kws = json.loads(st["keywords"] or "[]")
-        is_kw = bool(kws) and not json.loads(st["domains"] or "[]") and not json.loads(st["page_ids"] or "[]")
+        is_kw = is_keyword_source(st)
         data["stores"].append({"name": st["name"], "kind": "keyword" if is_kw else "store", "query": ", ".join(kws),
                                "date": S["cur"]["run_at"][:10],
                                "prev": S["prev"]["run_at"][:10] if S["prev"] else None,
@@ -902,7 +1020,11 @@ def cmd_painel(con, a):
             r["store"] = st["name"]
             r["kind"] = "keyword" if is_kw else "store"
             # coluna "Loja": numa busca por palavra-chave mostra o site de quem anuncia
-            r["loja"] = r["key"].split("/")[0] if is_kw else st["name"]
+            if is_kw:
+                lj = r.get("lojas") or [{"host": r["key"].split("/")[0], "active": r["active"]}]
+                r["loja"] = lj[0]["host"] if len(lj) == 1 else f"{len(lj)} lojas"
+            else:
+                r["loja"] = st["name"]
             covers.update(x for x in [r["cover"]] + [ad["cover"] for ad in r["ads"]] if x)
             data["products"].append(r)
     data["stores"].sort(key=lambda x: (x["kind"] == "keyword", x["name"].lower()))   # lojas primeiro

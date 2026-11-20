@@ -66,6 +66,7 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 - Por padrão as palavras podem aparecer em qualquer ordem. Para exigir a frase exata, acrescente `"frase_exata": true`.
 - Na planilha, a palavra-chave aparece no filtro (grupo "Palavras-chave") e a coluna **Loja** mostra o site de quem está anunciando cada produto.
 - Termos genéricos trazem anúncios sem relação; nomes de produto ou nicho funcionam melhor.
+- **Mesmo produto em lojas diferentes vira uma linha só.** O monitor junta produtos de sites diferentes quando o criativo é praticamente idêntico (mesma imagem/quadro do vídeo, comparando forma e cor) ou quando os nomes no link têm 60%+ das palavras em comum. A coluna Loja mostra "N lojas" (passe o mouse para ver quais) e o botão Anúncios lista os anúncios de todas, com a loja de cada um.
 - Remover uma loja do arquivo **não** apaga o histórico dela, mas ela continua sendo coletada até ser removida do banco: peça ao Claude ("pare de monitorar a loja X") ou rode `python scripts/monitor.py remove --name "Loja X"` com `ADS_MONITOR_DIR=dados`.
 
 ## Criativos
