@@ -23,7 +23,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
          font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 20px 16px 48px; }
   h1 { font-size: 22px; margin: 0 0 2px; }
   .sub { color: var(--muted); margin: 0 0 16px; }
   .stores { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
@@ -43,9 +43,9 @@
   input[type=search] { min-width: 220px; }
   .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
   .scroll { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; min-width: 1240px; table-layout: fixed; }
+  table { width: 100%; border-collapse: collapse; min-width: 1324px; table-layout: fixed; }
   th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
-  th { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600;
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .02em; color: var(--muted); font-weight: 600;
        background: var(--surface-2); position: sticky; top: 0; white-space: nowrap; }
   th.sort { cursor: pointer; user-select: none; }
   th.sort:hover { color: var(--text); }
@@ -210,10 +210,10 @@ function filtered() {
 
 // larguras fixas: as colunas não mudam de posição quando aparece um selo em "Sinal"
 const COLS = [
-  { k: null, t: "Criativo", w: 76 }, { k: "name", t: "Produto", w: null }, { k: "store", t: "Loja", w: 120 },
-  { k: "active", t: "Anúncios ativos", num: 1, w: 150 }, { k: "delta", t: "Variação", num: 1, w: 105 },
-  { k: "oldest", t: "Mais antigo (dias)", num: 1, w: 150 }, { k: "since", t: "Monitorando desde", w: 160 },
-  { k: null, t: "Sinal", w: 160 }, { k: null, t: "", w: 120 },
+  { k: null, t: "Criativo", w: 88 }, { k: "name", t: "Produto", w: null }, { k: "store", t: "Loja", w: 118 },
+  { k: "active", t: "Ads ativos", num: 1, w: 118 }, { k: "delta", t: "Variação", num: 1, w: 100 },
+  { k: "oldest", t: "Ad mais antigo (dias)", num: 1, w: 182 }, { k: "since", t: "Monitorando desde", w: 174 },
+  { k: null, t: "Sinal", w: 150 }, { k: null, t: "", w: 114 },
 ];
 
 function renderTable() {
