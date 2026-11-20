@@ -831,6 +831,24 @@ def broken_words(name):
     return sum(1 for t in re.findall(r"[a-z]+", (name or "").lower()) if len(t) <= 3 and t not in SHORT_OK)
 
 
+# sinais de escala além do crescimento (dados já coletados, sem custo)
+DUP_MIN = 10          # 🔁 duplicações somadas dos anúncios do produto
+PAGES_MIN = 3         # 📄 páginas diferentes anunciando o produto
+OLD_DAYS, OLD_ADS_MIN = 30, 3   # ⏳ anúncios com 30+ dias ainda no top de impressões
+
+
+def add_stats(row):
+    """Calcula duplicações, páginas e anúncios antigos no top a partir dos anúncios do produto."""
+    ads = row["ads"]
+    pages = sorted({a["page"] for a in ads if a.get("page")})
+    row["dup_total"] = sum(a["dup"] or 1 for a in ads)
+    row["pages"] = pages
+    row["old_ads"] = sum(1 for a in ads if (a["days"] or 0) >= OLD_DAYS)
+    row["flags"] = {"dup": row["dup_total"] >= DUP_MIN, "pages": len(pages) >= PAGES_MIN,
+                    "old": row["old_ads"] >= OLD_ADS_MIN}
+    return row
+
+
 def products_of(S):
     """Linhas da planilha 'Produtos anunciados' para uma loja."""
     cur, prev, now_ts = S["cur"], S["prev"], S["now_ts"]
@@ -870,7 +888,7 @@ def products_of(S):
             "scale": {"gain": sig[0], "base": sig[1]} if sig else None,
             "ads": ads})
     rows.sort(key=lambda r: -r["active"])
-    return rows
+    return [add_stats(r) for r in rows]
 
 
 # ---------- mesmo produto em lojas diferentes (buscas por palavra-chave) ----------
@@ -976,7 +994,7 @@ def merge_across_stores(rows):
                         "keys": [r["key"] for r in mem]})
         else:
             top["ads"] = [dict(ad, loja=top["key"].split("/")[0]) for ad in top["ads"]]
-        out.append(top)
+        out.append(add_stats(top))
     out.sort(key=lambda r: -r["active"])
     return out
 
@@ -1008,12 +1026,19 @@ def report_store(con, st, a, csv_rows):
     if hot:
         out += ["**🚀 Possível início de escala:**", ""]
         out += [f"- {r['name']}: {r['scale']['base']} → {r['active']} anúncios" for r in hot] + [""]
+    cons = sorted((r for r in rows if r["flags"]["old"]), key=lambda r: (-r["old_ads"], -r["active"]))[:5]
+    if cons:
+        out += ["**⏳ Vencedores consolidados** (3+ anúncios com 30+ dias ainda no top):", ""]
+        out += [f"- {r['name']}: {r['old_ads']} de {r['active']} anúncios com 30+ dias · {len(r['pages'])} página(s) · "
+                f"{r['dup_total']} duplicações" for r in cons] + [""]
     for r in rows:
         csv_rows["produtos"].append({"loja": st["name"], "data": cur["run_at"][:10], "produto": r["name"],
                                      "chave": r["key"], "anuncios_ativos": r["active"],
                                      "variacao": r["delta"] if r["delta"] is not None else "",
                                      "dias_anuncio_mais_antigo": r["oldest"], "monitorando_desde": r["since"],
                                      "possivel_escala": "sim" if r["scale"] else "",
+                                     "duplicacoes": r["dup_total"], "paginas": len(r["pages"]),
+                                     "anuncios_30d_no_top": r["old_ads"],
                                      "sites": ", ".join(f"{l['host']} ({l['active']})" for l in r.get("lojas", []))})
         for ad in r["ads"]:
             csv_rows["anuncios"].append({"loja": st["name"], "produto": r["name"], "ad_id": ad["id"],
@@ -1090,12 +1115,24 @@ def compute_suggestions(con, top=10):
         has_products = not content and any(p["key"].split("/", 1)[1].strip("/") for p in h["products"])
         if cur < 2:
             continue
-        score = 10 * len(scaling) + 2 * max(growth, 0) + 5 * (len(h["keywords"]) - 1) + cur + (3 if has_products else -5)
+        host_pages = sorted({a["page"] for a in h["ads"].values() if a.get("page")})
+        host_dup = sum(a["dup"] or 1 for a in h["ads"].values())
+        n_dup = sum(1 for p in h["products"] if p["flags"]["dup"])
+        n_pg = sum(1 for p in h["products"] if p["flags"]["pages"])
+        n_old = sum(1 for p in h["products"] if p["flags"]["old"])
+        score = 10 * len(scaling) + 2 * max(growth, 0) + 5 * (len(h["keywords"]) - 1) + cur + (3 if has_products else -5) \
+            + 3 * n_dup + 3 * n_pg + 4 * n_old + (3 if len(host_pages) >= PAGES_MIN else 0)
         reasons = []
         if scaling:
             reasons.append(f"{len(scaling)} produto{'s' if len(scaling) > 1 else ''} escalando")
         if base is not None and growth > 0:
             reasons.append(f"anúncios {base} → {cur} em {k} coleta{'s' if k > 1 else ''}")
+        if n_old:
+            reasons.append(f"⏳ {n_old} produto{'s' if n_old > 1 else ''} consolidado{'s' if n_old > 1 else ''}")
+        if len(host_pages) >= PAGES_MIN:
+            reasons.append(f"📄 anuncia por {len(host_pages)} páginas")
+        if host_dup >= DUP_MIN:
+            reasons.append(f"🔁 criativos duplicados {host_dup}×")
         if len(h["keywords"]) > 1:
             reasons.append(f"aparece em {len(h['keywords'])} palavras-chave")
         reasons.append(f"{cur} anúncios na amostra")

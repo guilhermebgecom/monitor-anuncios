@@ -77,6 +77,16 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 - Os links diretos de imagem/vídeo do Facebook **não** são guardados: eles expiram em poucos dias e contêm códigos longos que a proteção do GitHub confunde com senhas.
 - Crescimento estimado da pasta: ~15–25 MB na primeira coleta e ~1–3 MB por dia depois. Se ficar grande, dá para reduzir o tamanho das miniaturas.
 
+## Sinais de escala na planilha
+
+Além do 🚀 (aumento rápido, aba Evolução), cada produto pode ter etiquetas na coluna **Sinal** (passe o mouse ou toque para ver o detalhe):
+
+- **🔁 Duplicado** — 10+ duplicações somadas nos anúncios do produto (criativos replicados em vários conjuntos).
+- **📄 Várias páginas** — anunciado por 3+ páginas diferentes.
+- **⏳ Consolidado** — 3+ anúncios no ar há 30+ dias que continuam entre os de maior impressão (vencedor estável).
+
+Esses sinais também aparecem nos cartões da Evolução, no topo da janela Anúncios, pesam na ordem das Sugestões e o resumo diário lista os ⏳ consolidados de cada loja.
+
 ## Sugestões de lojas
 
 A aba **Sugestões** da planilha mostra as **10 lojas** encontradas nas buscas por palavra-chave que ainda não são monitoradas, ordenadas por sinais de escala (produtos escalando, crescimento de anúncios, presença em várias palavras-chave, volume na amostra). Marketplaces e redes sociais ficam de fora. Para cada sugerida, o robô consulta o **total de anúncios ativos na Biblioteca** (1 crédito por loja por dia). Para passar a monitorar uma loja: **Copiar para lojas.json** → **Editar lojas.json** → cole a linha e salve.

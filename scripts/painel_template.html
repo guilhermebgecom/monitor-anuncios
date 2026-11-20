@@ -49,7 +49,7 @@
   #f-store { max-width: 260px; }
   .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
   .scroll { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; min-width: 1368px; table-layout: fixed; }
+  table { width: 100%; border-collapse: collapse; min-width: 1390px; table-layout: fixed; }
   th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
   th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .02em; color: var(--muted); font-weight: 600;
        background: var(--surface-2); position: sticky; top: 0; white-space: nowrap; }
@@ -151,6 +151,12 @@
   .sug .first { color: var(--muted); font-size: 12px; padding: 8px 0 4px; }
   a.btn { text-decoration: none; display: inline-block; }
   .btn.ok { border-color: var(--up); color: var(--up); }
+  .sigs { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip.mini { background: var(--surface-2); color: var(--text); font-weight: 600; padding: 2px 7px; cursor: help; border: 0; font: inherit; font-size: 12px; }
+  .chip.mini:hover, .chip.mini:focus-visible { background: var(--accent-soft); outline: none; }
+  .stats { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 6px; }
+  .stats b { color: var(--text); }
+  #pop .tipbody { padding: 4px 12px; white-space: pre-line; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -203,7 +209,7 @@
 <div id="pop" role="tooltip"></div>
 <dialog id="modal">
   <div class="m-h">
-    <div class="t"><h2 id="m-title"></h2><p id="m-sub"></p></div>
+    <div class="t"><h2 id="m-title"></h2><p id="m-sub"></p><div class="stats" id="m-stats"></div></div>
     <button class="x" id="m-close" aria-label="Fechar">×</button>
   </div>
   <div class="m-bar">
@@ -248,6 +254,16 @@ function header() {
     (kws.length ? `<optgroup label="Palavras-chave">${kws.map(opt).join("")}</optgroup>` : "");
 }
 
+// etiquetas 🔁 📄 ⏳ (detalhe ao passar o mouse ou tocar)
+function miniChips(p) {
+  if (!p.flags) return "";
+  const out = [];
+  if (p.flags.dup) out.push(["🔁", p.dup_total, `🔁 Duplicado: ${p.dup_total} duplicações somadas nos ${p.active} anúncios do produto (criativos replicados em vários conjuntos — típico de escala).`]);
+  if (p.flags.pages) out.push(["📄", p.pages.length, `📄 Várias páginas: anunciado por ${p.pages.length} páginas\n${p.pages.slice(0, 8).join(", ")}${p.pages.length > 8 ? "…" : ""}`]);
+  if (p.flags.old) out.push(["⏳", p.old_ads, `⏳ Consolidado: ${p.old_ads} de ${p.active} anúncios estão no ar há 30+ dias e continuam entre os de maior impressão.`]);
+  return out.map(([i, n, t]) => `<button class="chip mini has-tip" data-tip="${esc(t)}">${i} ${n}</button>`).join("");
+}
+const statsLine = (p) => p.flags ? `<div class="stats"><span>🔁 <b>${p.dup_total}</b> duplicações</span><span>📄 <b>${p.pages.length}</b> página${p.pages.length === 1 ? "" : "s"}</span><span>⏳ <b>${p.old_ads}</b> com 30+ dias no top</span></div>` : "";
 const lojaCell = (p) => (p.lojas || []).length > 1
   ? `<button class="lojas-btn" data-lojas="${esc(p.store)}|${esc(p.key)}" aria-haspopup="true">${esc(p.loja)} ▾</button>`
   : esc(p.loja);
@@ -265,7 +281,7 @@ const COLS = [
   { k: null, t: "Criativo", w: 88 }, { k: "name", t: "Produto", w: null }, { k: "loja", t: "Loja", w: 162 },
   { k: "active", t: "Ads ativos", num: 1, w: 118 }, { k: "delta", t: "Variação", num: 1, w: 100 },
   { k: "oldest", t: "Ad mais antigo (dias)", num: 1, w: 182 }, { k: "since", t: "Monitorando desde", w: 174 },
-  { k: null, t: "Sinal", w: 150 }, { k: null, t: "", w: 114 },
+  { k: null, t: "Sinal", w: 172 }, { k: null, t: "", w: 114 },
 ];
 
 function renderTable() {
@@ -282,7 +298,7 @@ function renderTable() {
   });
   $("#p-empty").hidden = rows.length > 0;
   $("#tbody").innerHTML = rows.map(p => {
-    const sig = p.scale ? `<span class="chip scale">🚀 Possível escala</span>` : p.is_new ? `<span class="chip new">Novo</span>` : "";
+    const sig = `<div class="sigs">${p.scale ? `<span class="chip scale">🚀 Possível escala</span>` : p.is_new ? `<span class="chip new">Novo</span>` : ""}${miniChips(p)}</div>`;
     const key = p.link ? `<a href="${esc(p.link)}" target="_blank" rel="noopener noreferrer">${esc(p.key)}</a>` : esc(p.key);
     return `<tr>
       <td>${thumb(p.cover)}</td>
@@ -365,6 +381,7 @@ function renderEvolucao() {
     const runs = p.history.length;
     return `<div class="card">
       <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st">${p.kind === "keyword" ? `${lojaCell(p)} · 🔎 ${esc(p.store)}` : esc(p.store)}</div></div></div>
+      ${statsLine(p)}
       <div class="kpi"><b>${p.active}</b><span>anúncios ativos</span><span class="chip scale" title="de ${p.scale.base} para ${p.active} anúncios">▲ +${p.scale.gain} em ${Math.min(3, runs - 1)} coleta${Math.min(3, runs - 1) > 1 ? "s" : ""}</span></div>
       ${chart(p.history)}
       <div class="actions"><button class="btn" data-open="${esc(p.store)}|${esc(p.key)}">Anúncios</button></div>
@@ -379,6 +396,9 @@ function renderModal() {
     ? (a, b) => b.dup - a.dup || (a.rank ?? 1e9) - (b.rank ?? 1e9)
     : (a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9) || b.dup - a.dup);
   $("#m-title").textContent = p.name;
+  const pages = new Set(p.ads.map(a => a.page).filter(Boolean)).size, dups = p.ads.reduce((s, a) => s + (a.dup || 1), 0);
+  const oldest = Math.max(0, ...p.ads.map(a => a.days || 0)), old30 = p.ads.filter(a => (a.days || 0) >= 30).length;
+  $("#m-stats").innerHTML = `<span><b>${p.ads.length}</b> anúncios</span><span>📄 <b>${pages}</b> página${pages === 1 ? "" : "s"}</span><span>🔁 <b>${dups}</b> duplicações</span><span>⏳ <b>${old30}</b> com 30+ dias · mais antigo há <b>${oldest}</b> dias</span>`;
   $("#m-sub").textContent = `${p.kind === "keyword" ? ((p.lojas || []).length > 1 ? p.lojas.map(l => l.host).join(", ") : p.loja) + " · 🔎 " + p.store : p.store} · ${p.ads.length} anúncio(s) ativo(s) na amostra · posição = ranking de impressões na Biblioteca de Anúncios`;
   document.querySelectorAll("[data-msort]").forEach(b => b.classList.toggle("on", b.dataset.msort === state.msort));
   $("#m-list").innerHTML = ads.map((ad, i) => `<div class="ad">
@@ -451,11 +471,18 @@ const pop = $("#pop"); let popFor = null, popTimer = null, popAt = 0, lastTouch 
 document.addEventListener("touchstart", () => { lastTouch = Date.now(); }, { passive: true, capture: true });
 function showPop(btn) {
   clearTimeout(popTimer);
+  if (btn.dataset.tip !== undefined) {
+    pop.innerHTML = `<div class="tipbody">${esc(btn.dataset.tip)}</div>`;
+    return placePop(btn);
+  }
   const [s, k] = btn.dataset.lojas.split("|");
   const p = DATA.products.find(x => x.store === s && x.key === k); if (!p) return;
   pop.innerHTML = `<div class="ph">Vendido por ${p.lojas.length} lojas · ${p.active} anúncios</div>` +
     p.lojas.map(l => `<a href="https://${esc(l.host)}" target="_blank" rel="noopener noreferrer">
       <span>${esc(l.host)}</span><span>${l.active} anúncio${l.active === 1 ? "" : "s"}</span></a>`).join("");
+  placePop(btn);
+}
+function placePop(btn) {
   pop.style.display = "block";
   const r = btn.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
   let left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
@@ -465,18 +492,18 @@ function showPop(btn) {
 }
 function hidePop(delay = 150) { clearTimeout(popTimer); popTimer = setTimeout(() => { pop.style.display = "none"; popFor = null; }, delay); }
 document.addEventListener("mouseover", (ev) => {
-  const b = ev.target.closest(".lojas-btn"); if (b) showPop(b);
+  const b = ev.target.closest(".lojas-btn, .has-tip"); if (b) showPop(b);
   else if (ev.target.closest("#pop")) clearTimeout(popTimer);
 });
 document.addEventListener("mouseout", (ev) => {
   if (Date.now() - lastTouch < 1500) return;   // toque no celular: fecha só ao tocar fora ou de novo no botão
-  if (ev.target.closest(".lojas-btn, #pop") && !(ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest(".lojas-btn, #pop"))) hidePop();
+  if (ev.target.closest(".lojas-btn, .has-tip, #pop") && !(ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest(".lojas-btn, .has-tip, #pop"))) hidePop();
 });
-document.addEventListener("focusin", (ev) => { const b = ev.target.closest(".lojas-btn"); if (b) showPop(b); });
+document.addEventListener("focusin", (ev) => { const b = ev.target.closest(".lojas-btn, .has-tip"); if (b) showPop(b); });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") hidePop(0); });
 window.addEventListener("scroll", () => { if (popFor) hidePop(0); }, true);
 document.addEventListener("click", (ev) => {
-  const lb = ev.target.closest(".lojas-btn");
+  const lb = ev.target.closest(".lojas-btn, .has-tip");
   // no celular o toque gera "mouse em cima" + clique: só fecha se a lista já estava aberta antes do toque
   if (lb) { if (popFor === lb && pop.style.display === "block" && Date.now() - popAt > 500) hidePop(0); else showPop(lb); return; }
   if (!ev.target.closest("#pop")) hidePop(0);
