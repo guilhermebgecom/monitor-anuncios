@@ -751,7 +751,8 @@ def report_store(con, st, a, csv_rows):
     out += [f"- **Anúncios ativos:** {len(cur_ads)}{delta(len(cur_ads), len(prev_ads))}",
             f"- **Produtos/páginas anunciados:** {len(pc)}{delta(len(pc), len(pp))}"]
     if prev:
-        out += [f"- **Anúncios novos:** {len(new_ads)} · **pausados:** {len(stopped)}"]
+        sai = "saíram da amostra" if (cur["capped"] or prev["capped"]) else "pausados"
+        out += [f"- **Anúncios novos:** {len(new_ads)} · **{sai}:** {len(stopped)}"]
     out.append("")
 
     # sinais
