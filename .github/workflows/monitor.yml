@@ -6,7 +6,9 @@ on:
   workflow_dispatch:         # botão "Run workflow" para rodar na hora
 
 permissions:
-  contents: write            # para salvar o histórico e os relatórios no repositório
+  contents: write            # salvar o histórico e os relatórios no repositório
+  pages: write               # publicar a planilha no GitHub Pages
+  id-token: write
 
 concurrency:
   group: monitor-anuncios
@@ -18,6 +20,7 @@ jobs:
     timeout-minutes: 60
     env:
       ADS_MONITOR_DIR: dados
+      PAINEL_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
       SCRAPECREATORS_API_KEY: ${{ secrets.SCRAPECREATORS_API_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -39,8 +42,8 @@ jobs:
       - name: Atualizar lista de lojas
         run: python scripts/monitor.py sync --file lojas.json
 
-      - name: Coletar anúncios (300 de maior impressão por loja)
-        run: python scripts/monitor.py run --source scrapecreators --max-ads 300 --sort impressions
+      - name: Coletar anúncios (150 de maior impressão por loja)
+        run: python scripts/monitor.py run --source scrapecreators --max-ads 150 --sort impressions
 
       - name: Reagrupar produtos do histórico (regras atuais)
         run: python scripts/monitor.py rekey
@@ -60,3 +63,22 @@ jobs:
           git add dados relatorios criativos
           git diff --cached --quiet || git commit -m "Coleta $(date -u +%F)"
           git push origin HEAD
+
+      - name: Gerar planilha interativa
+        run: python scripts/monitor.py painel --out site
+
+      - name: Preparar publicação
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  publicar:
+    needs: coletar
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Publicar planilha no GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

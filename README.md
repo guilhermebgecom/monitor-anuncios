@@ -1,6 +1,9 @@
 # Monitor de anúncios — Meta Ad Library
 
-Coleta todo dia os **300 anúncios de maior impressão** de cada loja listada em `lojas.json` (via API da ScrapeCreators), agrupa por produto e gera um relatório com o que mudou: produtos novos, escalando, reduzindo, saindo, anúncios novos e os que estão há mais tempo no ar.
+Coleta todo dia os **150 anúncios de maior impressão** de cada loja listada em `lojas.json` (via API da ScrapeCreators), agrupa por produto e publica uma **planilha interativa** no GitHub Pages:
+
+- **Produtos anunciados:** criativo, produto, loja, anúncios ativos, variação, anúncio mais antigo (dias), monitorando desde, sinal de escala e o botão **Anúncios** (abre os links da Biblioteca de Anúncios daquele produto, ranqueados por posição em impressões ou por duplicações).
+- **Evolução:** só os produtos em aumento rápido (possível início de escala), com gráfico por produto: linha verde quando sobe, vermelha quando cai; passe o mouse para ver os valores de cada dia.
 
 Roda sozinho no **GitHub Actions** (todo dia às 07:23 de Brasília) e salva tudo neste repositório.
 
@@ -9,7 +12,8 @@ Roda sozinho no **GitHub Actions** (todo dia às 07:23 de Brasília) e salva tud
 | Caminho | O que é |
 |---|---|
 | `lojas.json` | Lista de lojas monitoradas (edite aqui) |
-| `relatorios/ultimo.md` | Relatório da coleta mais recente |
+| Planilha interativa | `https://SEU_USUARIO.github.io/monitor-anuncios/` (atualizada a cada coleta) |
+| `relatorios/ultimo.md` | Resumo curto da coleta mais recente (com o link da planilha) |
 | `relatorios/AAAA-MM-DD.md` | Relatório de cada dia |
 | `relatorios/csv/` | `produtos.csv` (situação atual), `historico.csv` (produto × dia), `anuncios.csv` (anúncios ativos) |
 | `criativos/<loja>/<id>.jpg` | Miniatura da capa de cada anúncio (imagem ou quadro inicial do vídeo), salva no dia em que o anúncio aparece |
@@ -34,7 +38,8 @@ Roda sozinho no **GitHub Actions** (todo dia às 07:23 de Brasília) e salva tud
    - Name: `SCRAPECREATORS_API_KEY`
    - Secret: sua API key
 4. **Permissão de escrita:** *Settings → Actions → General → Workflow permissions* → marque **Read and write permissions** → *Save*. (Necessário para o robô salvar o histórico.)
-5. **Primeira coleta:** aba *Actions* → **Monitor de anúncios** → **Run workflow**. Em poucos minutos aparece um commit "Coleta AAAA-MM-DD" e o relatório em `relatorios/ultimo.md`. O resumo também aparece na própria página da execução.
+5. **Ativar o GitHub Pages (para a planilha):** *Settings → Pages → Build and deployment → Source* → escolha **GitHub Actions**. O GitHub Pages exige repositório **público** ou plano **GitHub Pro**. Atenção: o link da planilha é público (qualquer pessoa com o link vê), mas não aparece em buscadores.
+6. **Primeira coleta:** aba *Actions* → **Monitor de anúncios** → **Run workflow**. Em poucos minutos aparece um commit "Coleta AAAA-MM-DD" e o relatório em `relatorios/ultimo.md`. O resumo também aparece na própria página da execução.
 
 A partir daí roda sozinho todo dia. As comparações (escalando, novos, pausados) começam na segunda coleta.
 
@@ -63,7 +68,7 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 
 ## Custos
 
-- **ScrapeCreators:** ~30 créditos por loja por dia (300 anúncios ≈ 30 chamadas). Com 3 lojas: ~90/dia, ~2.700/mês, **~US$ 5/mês** (o pacote de US$ 47 dura ~9 meses). Cada loja nova soma ~US$ 1,70/mês.
+- **ScrapeCreators:** ~14 créditos por loja por dia (150 anúncios). Com 3 lojas: ~42/dia, ~1.300/mês, **~US$ 2,50/mês** (o pacote de US$ 47 dura ~1 ano e meio). Cada loja nova soma ~US$ 0,80/mês.
 - **GitHub Actions:** cada coleta leva poucos minutos (a primeira com capas, um pouco mais); cabe com folga nos 2.000 minutos/mês gratuitos de repositórios privados.
 - O consumo de créditos de cada dia aparece no log da execução ("Créditos ScrapeCreators usados nesta coleta").
 
@@ -71,7 +76,7 @@ Edite `lojas.json` no próprio GitHub (ícone de lápis) e salve:
 
 Em `.github/workflows/monitor.yml`:
 - Horário: linha `cron: "23 10 * * *"` (horário UTC; 10:23 UTC = 07:23 em Brasília). O GitHub pode atrasar execuções agendadas em alguns minutos.
-- Amostra: `--max-ads 300` (use sempre o mesmo valor; mudar distorce a comparação entre dias).
+- Amostra: `--max-ads 150` (use sempre o mesmo valor; mudar distorce a comparação entre dias).
 
 ## Analisar com o Claude
 
@@ -83,4 +88,5 @@ Abra uma sessão do Claude com este repositório e pergunte, por exemplo: "o que
 - **Falhou em "Salvar no repositório" (permission denied / 403):** falta a permissão de escrita (passo 4).
 - **"Créditos da ScrapeCreators esgotados":** recarregue os créditos; o histórico não se perde, só aquele dia fica sem coleta.
 - **Falhou em "Salvar no repositório" com "Push cannot contain secrets":** a proteção do GitHub achou algo parecido com uma senha. Abra o link que aparece no log, veja o trecho apontado e decida: se for um falso alarme, marque como tal no próprio GitHub; se tiver dúvida, peça ajuda ao Claude.
+- **Falhou em "Publicar planilha no GitHub Pages":** o Pages não está ativado com a fonte *GitHub Actions* (passo 5) ou o repositório é privado sem GitHub Pro. A coleta e o histórico são salvos mesmo assim.
 - **Uma loja veio com 0 anúncios:** a coleta é marcada como vazia e ignorada nos relatórios; confira se o domínio em `lojas.json` está certo.

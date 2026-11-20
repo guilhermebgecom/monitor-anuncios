@@ -68,6 +68,10 @@ def db_open(path):
         con.execute("ALTER TABLE runs ADD COLUMN capped INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    try:  # posição do anúncio no ranking de impressões da Biblioteca (1 = mais impressões)
+        con.execute("ALTER TABLE sightings ADD COLUMN rank INTEGER")
+    except sqlite3.OperationalError:
+        pass
     try:  # caminho da imagem de capa do anúncio (criativos/<loja>/<id>.jpg)
         con.execute("ALTER TABLE ads ADD COLUMN cover TEXT")
     except sqlite3.OperationalError:
@@ -634,7 +638,7 @@ def cmd_run(con, a):
         known = [r["product_key"] for r in
                  con.execute("SELECT product_key FROM products WHERE store_id=?", (st["id"],))]
         alias = canonical_keys({k for _, ks in ads.values() for k in ks}, known)
-        for ad_id, (ad, keys) in ads.items():
+        for pos, (ad_id, (ad, keys)) in enumerate(ads.items(), 1):  # ordem da API = ranking de impressões
             s = ad.get("snapshot") or {}
             cards = s.get("cards") or [{}]
             row = (ad.get("pageID"), ad.get("pageName"), ad.get("startDate"), ad.get("endDate"),
@@ -655,7 +659,8 @@ def cmd_run(con, a):
                                link_url, platforms, media_url, collation_count, data_json, ad_id, store_id,
                                first_seen, last_seen, is_active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
                             row + (ad_id, st["id"], now, now))
-            con.execute("INSERT OR REPLACE INTO sightings VALUES(?,?,?)", (run_id, ad_id, ad.get("collationCount")))
+            con.execute("INSERT OR REPLACE INTO sightings(run_id, ad_id, collation_count, rank) VALUES(?,?,?,?)",
+                        (run_id, ad_id, ad.get("collationCount"), pos))
             for link in ad_links(ad):
                 k = product_key(link)
                 if not k:
@@ -697,21 +702,32 @@ def product_counts(con, store_id, run_id, rep=lambda k: k):
     return {k: len(v) for k, v in groups.items()}
 
 
-def report_store(con, st, a, csv_rows):
+def scale_signal(series, window=3):
+    """Possível início de escala: o produto ganhou anúncios rápido nas últimas coletas.
+    series = contagens por coleta (a última é a atual). Regra: nas últimas `window` coletas
+    ganhou pelo menos 2 anúncios e +50% (ou surgiu do zero com 3+), tem 3+ anúncios agora
+    e não caiu na última coleta. Retorna (ganho, base) ou None."""
+    if len(series) < 2:
+        return None
+    cur, last = series[-1], series[-2]
+    base = series[max(0, len(series) - 1 - window)]
+    gain = cur - base
+    if cur < 3 or cur < last or gain < 2:
+        return None
+    if base and cur < 1.5 * base:
+        return None
+    return gain, base
+
+
+def store_state(con, st):
+    """Retrato da loja: coletas, produtos (agrupados), anúncios e histórico por produto."""
     runs = con.execute("SELECT * FROM runs WHERE store_id=? AND status IN ('ok','partial') ORDER BY id",
                        (st["id"],)).fetchall()
-    out = [f"## {st['name']}", ""]
     if not runs:
-        return out + ["Ainda sem coletas. Rode `monitor.py run`.", ""]
+        return None
     cur, prev = runs[-1], (runs[-2] if len(runs) > 1 else None)
-    now_ts = ts_of(cur["run_at"])
-    cur_ads = {r["ad_id"] for r in con.execute("SELECT ad_id FROM sightings WHERE run_id=?", (cur["id"],))}
-    prev_ads = {r["ad_id"] for r in con.execute("SELECT ad_id FROM sightings WHERE run_id=?", (prev["id"],))} \
-        if prev else set()
-    new_ads, stopped = cur_ads - prev_ads if prev else set(), prev_ads - cur_ads
     names = {r["product_key"]: r["name"] for r in
              con.execute("SELECT product_key, name FROM products WHERE store_id=?", (st["id"],))}
-    # links diferentes com o mesmo nome oficial = mesmo produto (variantes, landing pages)
     by_name, reps = {}, {}
     merged = canonical_keys(set(names), [])                   # variações de link vistas em qualquer dia
     for k in sorted(names):
@@ -720,129 +736,97 @@ def report_store(con, st, a, csv_rows):
         norm = re.sub(r"[®™©]|\s+", " ", (names[k] or label_from_key(k))).strip().lower()
         reps[k] = by_name.setdefault(re.sub(r"\s+", " ", norm), k)
     rep = lambda k: reps.get(merged.get(k, k), merged.get(k, k))  # noqa: E731
-    pc, pp = product_counts(con, st["id"], cur["id"], rep), \
-        (product_counts(con, st["id"], prev["id"], rep) if prev else {})
+    counts = {r["id"]: product_counts(con, st["id"], r["id"], rep) for r in runs}
     ads_by_id = {r["ad_id"]: r for r in con.execute("SELECT * FROM ads WHERE store_id=?", (st["id"],))}
     ad_keys = defaultdict(list)
     for r in con.execute("SELECT ad_id, product_key FROM ad_products WHERE store_id=?", (st["id"],)):
         if rep(r["product_key"]) not in ad_keys[r["ad_id"]]:
             ad_keys[r["ad_id"]].append(rep(r["product_key"]))
     first_run_of = {}
-    for r in con.execute("""SELECT ap.product_key, min(ru.id) f FROM sightings s JOIN runs ru ON ru.id=s.run_id
-                            JOIN ad_products ap ON ap.ad_id=s.ad_id AND ap.store_id=ru.store_id
-                            WHERE ru.store_id=? AND ru.status IN ('ok','partial') GROUP BY ap.product_key""",
-                         (st["id"],)):
-        k = rep(r["product_key"])
-        first_run_of[k] = min(first_run_of.get(k, r["f"]), r["f"])
-    run_date = {r["id"]: r["run_at"] for r in runs}
-    base_dir = os.path.dirname(os.path.abspath(a.out)) if getattr(a, "out", None) else os.getcwd()
+    for rid in sorted(counts):
+        for k in counts[rid]:
+            first_run_of.setdefault(k, rid)
+    sight = {r["ad_id"]: r for r in con.execute("SELECT * FROM sightings WHERE run_id=?", (cur["id"],))}
+    prev_ads = {r["ad_id"] for r in con.execute("SELECT ad_id FROM sightings WHERE run_id=?", (prev["id"],))} \
+        if prev else set()
+    return {"runs": runs, "cur": cur, "prev": prev, "counts": counts, "ads": ads_by_id, "ad_keys": ad_keys,
+            "first_run_of": first_run_of, "sight": sight, "prev_ads": prev_ads,
+            "name": lambda k: names.get(k) or label_from_key(k), "now_ts": ts_of(cur["run_at"]),
+            "run_date": {r["id"]: r["run_at"] for r in runs}}
 
-    def thumb(r, width=60):
-        cov = r["cover"]
-        if not cov or not os.path.exists(cov):
-            return ""
-        rel = os.path.relpath(os.path.abspath(cov), base_dir).replace(os.sep, "/")
-        return f'<img src="{rel}" width="{width}">'
-    name = lambda k: names.get(k) or label_from_key(k)  # noqa: E731
-    delta = lambda n, o: "" if prev is None else (f" ({n - o:+d})" if n != o else " (=)")  # noqa: E731
 
-    out += [f"Coleta: **{cur['run_at'][:10]}**" + (f" · comparada com {prev['run_at'][:10]}" if prev else
-                                                    " · primeira coleta (sem comparação ainda)"), ""]
-    out += [f"- **Anúncios ativos:** {len(cur_ads)}{delta(len(cur_ads), len(prev_ads))}",
-            f"- **Produtos/páginas anunciados:** {len(pc)}{delta(len(pc), len(pp))}"]
-    if prev:
-        sai = "saíram da amostra" if (cur["capped"] or prev["capped"]) else "pausados"
-        out += [f"- **Anúncios novos:** {len(new_ads)} · **{sai}:** {len(stopped)}"]
-    out.append("")
-
-    # sinais
-    signals = []
+def products_of(S):
+    """Linhas da planilha 'Produtos anunciados' para uma loja."""
+    cur, prev, now_ts = S["cur"], S["prev"], S["now_ts"]
+    pc = S["counts"][cur["id"]]
+    pp = S["counts"][prev["id"]] if prev else {}
+    rows = []
     for k, n in pc.items():
-        o = pp.get(k, 0)
-        if prev and first_run_of.get(k) == cur["id"]:
-            signals.append(f"🆕 Produto novo nos anúncios: **{name(k)}** ({n} anúncio(s))")
-        elif prev and (n - o >= 2 or (o and n > o and n >= 1.5 * o)):
-            signals.append(f"📈 Escalando: **{name(k)}** {o} → {n} anúncios")
-        elif prev and o - n >= 2:
-            signals.append(f"📉 Reduzindo: **{name(k)}** {o} → {n} anúncios")
-    for k in pp:
-        if k not in pc:
-            signals.append(f"❌ Saiu dos anúncios: **{name(k)}** (tinha {pp[k]})")
-    if signals:
-        out += ["### Mudanças", ""] + [f"- {s}" for s in signals] + [""]
-
-    # tabela de produtos
-    out += ["### Produtos anunciados", "",
-            "| Criativo | Produto | Anúncios ativos | Anúncio mais antigo (dias) | Monitorando desde |",
-            "|---|---|---:|---:|---|"]
-    for k, n in sorted(pc.items(), key=lambda x: -x[1]):
-        mine = [ads_by_id[i] for i in cur_ads if k in ad_keys[i]]
+        mine = [S["ads"][i] for i in S["sight"] if k in S["ad_keys"][i]]
         starts = [r["start_date"] for r in mine if r["start_date"]]
-        oldest = days_between(min(starts), now_ts) if starts else None
-        # capa do anúncio mais antigo do produto que tenha imagem
-        with_cover = sorted((r for r in mine if thumb(r)), key=lambda r: r["start_date"] or now_ts)
-        img = thumb(with_cover[0], 60) if with_cover else ""
-        out.append(f"| {img} | {name(k)} <br><sub>{k}</sub> | {n}{delta(n, pp.get(k, 0))} | "
-                   f"{oldest if oldest is not None else '—'} | {run_date.get(first_run_of.get(k), '')[:10]} |")
-        csv_rows["produtos"].append({"loja": st["name"], "data": cur["run_at"][:10], "produto": name(k),
-                                     "chave": k, "anuncios_ativos": n,
-                                     "variacao": (n - pp.get(k, 0)) if prev else "",
-                                     "dias_anuncio_mais_antigo": oldest})
-    no_link = [i for i in cur_ads if not ad_keys[i]]
-    if no_link:
-        out.append(f"| | _(sem link de destino: WhatsApp, formulário, perfil…)_ | {len(no_link)} | | |")
-    out.append("")
+        daily = list({r["run_at"][:10]: r for r in S["runs"]}.values())   # última coleta de cada dia
+        series = [S["counts"][r["id"]].get(k, 0) for r in daily]
+        sig = scale_signal(series)
+        ads = []
+        for r in mine:
+            sg = S["sight"][r["ad_id"]]
+            ads.append({"id": r["ad_id"], "rank": sg["rank"], "dup": r["collation_count"] or 1,
+                        "days": days_between(r["start_date"], now_ts), "page": r["page_name"],
+                        "title": (r["title"] or r["body"] or "")[:140], "format": r["format"],
+                        "cover": r["cover"] if r["cover"] and os.path.exists(r["cover"]) else None,
+                        "new": r["ad_id"] not in S["prev_ads"] if prev else False})
+        ads.sort(key=lambda x: (x["rank"] if x["rank"] is not None else 10**6, -x["dup"]))
+        with_cover = sorted((r for r in mine if r["cover"] and os.path.exists(r["cover"])),
+                            key=lambda r: r["start_date"] or now_ts)
+        first = S["first_run_of"].get(k)
+        rows.append({
+            "key": k, "name": S["name"](k), "active": n,
+            "delta": (n - pp.get(k, 0)) if prev else None,
+            "oldest": days_between(min(starts), now_ts) if starts else None,
+            "since": S["run_date"].get(first, "")[:10],
+            "is_new": bool(prev) and first == cur["id"],
+            "cover": with_cover[0]["cover"] if with_cover else None,
+            "link": next((r["link_url"] for r in mine if r["link_url"]), None),
+            "history": [{"date": r["run_at"][:10], "n": c} for r, c in zip(daily, series)],
+            "scale": {"gain": sig[0], "base": sig[1]} if sig else None,
+            "ads": ads})
+    rows.sort(key=lambda r: -r["active"])
+    return rows
 
-    def ad_line(r, end_ts):
-        txt = (r["title"] or r["body"] or "").replace("\n", " ")[:80]
-        d = days_between(r["start_date"], end_ts)
-        prods = ", ".join(name(k) for k in ad_keys[r["ad_id"]][:2]) or "—"
-        img = thumb(r, 70)
-        return (f"- {img + ' ' if img else ''}**{d if d is not None else '?'} dias** · {r['format'] or ''} · "
-                f"{prods} · {txt} · [ver anúncio](https://www.facebook.com/ads/library/?id={r['ad_id']})")
 
-    out += ["### Anúncios há mais tempo no ar (prováveis vencedores)", ""]
-    for r in sorted((ads_by_id[i] for i in cur_ads), key=lambda r: r["start_date"] or now_ts)[:a.top]:
-        out.append(ad_line(r, now_ts))
-    out.append("")
-    if prev and new_ads:
-        out += [f"### Novos desde {prev['run_at'][:10]} ({len(new_ads)})", ""]
-        out += [ad_line(ads_by_id[i], now_ts) for i in list(new_ads)[:a.top]] + [""]
-    if prev and stopped:
-        if cur["capped"] or prev["capped"]:
-            out += [f"### Saíram da amostra desde {prev['run_at'][:10]} ({len(stopped)})", "",
-                    f"_A coleta foi limitada aos {cur['n_ads']} anúncios de maior impressão: estes podem ter sido "
-                    "pausados ou apenas caído no ranking._", ""]
-        else:
-            out += [f"### Pausados desde {prev['run_at'][:10]} ({len(stopped)})", ""]
-        out += [ad_line(ads_by_id[i], ts_of(ads_by_id[i]["last_seen"])) for i in list(stopped)[:a.top]] + [""]
-
-    # evolução
-    hist = runs[-a.history:]
-    if len(hist) > 1:
-        cols = [r["run_at"][5:10] for r in hist]
-        counts = [product_counts(con, st["id"], r["id"], rep) for r in hist]
-        keys = sorted(set().union(*counts), key=lambda k: -counts[-1].get(k, 0))[:15]
-        out += ["### Evolução (anúncios ativos por produto)", "",
-                "| Produto | " + " | ".join(cols) + " |", "|---|" + "---:|" * len(cols),
-                "| **Total de anúncios** | " + " | ".join(str(r["n_ads"]) for r in hist) + " |"]
-        for k in keys:
-            out.append(f"| {name(k)} | " + " | ".join(str(c.get(k, 0)) for c in counts) + " |")
-        out.append("")
-    for r in runs:
-        for k, n in product_counts(con, st["id"], r["id"], rep).items():
-            csv_rows["historico"].append({"loja": st["name"], "data": r["run_at"][:10], "produto": name(k),
+def report_store(con, st, a, csv_rows):
+    """Resumo curto em Markdown (o detalhe fica na planilha interativa)."""
+    S = store_state(con, st)
+    out = [f"## {st['name']}", ""]
+    if not S:
+        return out + ["Ainda sem coletas.", ""]
+    cur, prev = S["cur"], S["prev"]
+    rows = products_of(S)
+    n_prev = len(S["counts"][prev["id"]]) if prev else None
+    out += [f"Coleta: **{cur['run_at'][:10]}**" + (f" · comparada com {prev['run_at'][:10]}" if prev else ""), "",
+            f"- **Anúncios na amostra:** {cur['n_ads']} (a Biblioteca indica ~{cur['total_reported']} ativos)",
+            f"- **Produtos anunciados:** {len(rows)}" + (f" ({len(rows) - n_prev:+d})" if prev else ""), ""]
+    hot = sorted((r for r in rows if r["scale"]), key=lambda r: -r["scale"]["gain"])
+    if hot:
+        out += ["**🚀 Possível início de escala:**", ""]
+        out += [f"- {r['name']}: {r['scale']['base']} → {r['active']} anúncios" for r in hot] + [""]
+    for r in rows:
+        csv_rows["produtos"].append({"loja": st["name"], "data": cur["run_at"][:10], "produto": r["name"],
+                                     "chave": r["key"], "anuncios_ativos": r["active"],
+                                     "variacao": r["delta"] if r["delta"] is not None else "",
+                                     "dias_anuncio_mais_antigo": r["oldest"], "monitorando_desde": r["since"],
+                                     "possivel_escala": "sim" if r["scale"] else ""})
+        for ad in r["ads"]:
+            csv_rows["anuncios"].append({"loja": st["name"], "produto": r["name"], "ad_id": ad["id"],
+                                         "posicao_impressoes": ad["rank"], "duplicacoes": ad["dup"],
+                                         "dias_no_ar": ad["days"], "pagina": ad["page"], "formato": ad["format"],
+                                         "titulo": ad["title"],
+                                         "link_ad_library": f"https://www.facebook.com/ads/library/?id={ad['id']}",
+                                         "capa": ad["cover"] or ""})
+    for run in S["runs"]:
+        for k, n in S["counts"][run["id"]].items():
+            csv_rows["historico"].append({"loja": st["name"], "data": run["run_at"][:10], "produto": S["name"](k),
                                           "chave": k, "anuncios_ativos": n})
-    for i in cur_ads:
-        r = ads_by_id[i]
-        csv_rows["anuncios"].append({
-            "loja": st["name"], "ad_id": i, "link_ad_library": f"https://www.facebook.com/ads/library/?id={i}",
-            "pagina": r["page_name"], "produtos": " | ".join(name(k) for k in ad_keys[i]),
-            "inicio": datetime.fromtimestamp(r["start_date"], timezone.utc).strftime("%Y-%m-%d") if r["start_date"] else "",
-            "dias_no_ar": days_between(r["start_date"], now_ts), "visto_primeiro_em": r["first_seen"][:10],
-            "versoes": r["collation_count"], "formato": r["format"], "plataformas": r["platforms"],
-            "titulo": r["title"], "texto": r["body"], "cta": r["cta"], "link": r["link_url"],
-            "capa": r["cover"] or ""})
     return out
 
 
@@ -851,10 +835,13 @@ def cmd_report(con, a):
     stores = [get_store(con, n) for n in a.store] if a.store else con.execute("SELECT * FROM stores ORDER BY name").fetchall()
     csv_rows = {"produtos": [], "historico": [], "anuncios": []}
     lines = [f"# Monitoramento de anúncios — {datetime.now().strftime('%d/%m/%Y')}", ""]
+    if os.environ.get("PAINEL_URL"):
+        lines += [f"📊 **Planilha interativa:** {os.environ['PAINEL_URL']}", ""]
     for st in stores:
         lines += report_store(con, st, a, csv_rows)
     md = "\n".join(lines)
     if a.out:
+        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
         open(a.out, "w", encoding="utf-8").write(md)
         print(f"Relatório: {a.out}", file=sys.stderr)
     else:
@@ -871,6 +858,38 @@ def cmd_report(con, a):
                 print(f"CSV: {path}", file=sys.stderr)
 
 
+def cmd_painel(con, a):
+    """Gera a planilha interativa (site estático: index.html + capas) para o GitHub Pages."""
+    import shutil
+    stores = con.execute("SELECT * FROM stores ORDER BY name").fetchall()
+    data = {"generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "stores": [], "products": []}
+    covers = set()
+    for st in stores:
+        S = store_state(con, st)
+        if not S:
+            continue
+        rows = products_of(S)
+        data["stores"].append({"name": st["name"], "date": S["cur"]["run_at"][:10],
+                               "prev": S["prev"]["run_at"][:10] if S["prev"] else None,
+                               "sample": S["cur"]["n_ads"], "total": S["cur"]["total_reported"],
+                               "products": len(rows), "runs": len(S["runs"])})
+        for r in rows:
+            r["store"] = st["name"]
+            covers.update(x for x in [r["cover"]] + [ad["cover"] for ad in r["ads"]] if x)
+            data["products"].append(r)
+    os.makedirs(a.out, exist_ok=True)
+    for c in covers:                                          # só as capas usadas na planilha
+        dst = os.path.join(a.out, c)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(c, dst)
+    tpl = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "painel_template.html"),
+               encoding="utf-8").read()
+    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    open(os.path.join(a.out, "index.html"), "w", encoding="utf-8").write(tpl.replace("/*__DATA__*/null", payload))
+    open(os.path.join(a.out, ".nojekyll"), "w").close()
+    print(f"Planilha: {a.out}/index.html ({len(data['products'])} produtos, {len(covers)} capas)", file=sys.stderr)
+
+
 # ---------------- CLI ----------------
 
 def main():
@@ -882,7 +901,7 @@ def main():
         sp.add_argument("--source", choices=["scrapecreators", "browser"],
                         help="fonte dos dados (padrão: scrapecreators se SCRAPECREATORS_API_KEY existir, "
                              "senão browser; ou $ADS_SOURCE)")
-        sp.add_argument("--max-ads", type=int, default=300,
+        sp.add_argument("--max-ads", type=int, default=150,
                         help="máx. de anúncios por busca (0 = todos). Na API: 30 anúncios = 1 crédito")
         sp.add_argument("--sort", choices=["impressions", "recent"], default="impressions",
                         help="com limite, mantém os de maior impressão (padrão) ou os mais recentes")
@@ -908,6 +927,8 @@ def main():
     scraping_opts(sp)
 
     sub.add_parser("list")
+    sp = sub.add_parser("painel", help="gera a planilha interativa (site para o GitHub Pages)")
+    sp.add_argument("--out", default="site")
     sp = sub.add_parser("rekey", help="reagrupa produtos de todo o histórico com as regras atuais")
     sp.add_argument("--store", action="append", default=[])
     sp = sub.add_parser("sync")
@@ -932,7 +953,7 @@ def main():
 
     a = p.parse_args()
     con = db_open(a.data_dir)
-    {"add": cmd_add, "resolve": cmd_resolve, "list": cmd_list, "sync": cmd_sync, "rekey": cmd_rekey, "remove": cmd_remove,
+    {"add": cmd_add, "resolve": cmd_resolve, "list": cmd_list, "sync": cmd_sync, "rekey": cmd_rekey, "painel": cmd_painel, "remove": cmd_remove,
      "run": cmd_run, "report": cmd_report}[a.cmd](con, a)
 
 
