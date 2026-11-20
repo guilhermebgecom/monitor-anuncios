@@ -125,6 +125,17 @@
     .ad .pos { width: 24px; }
     .ad .thumb { width: 44px; height: 44px; }
   }
+  .lojas-btn { font: inherit; font-weight: 600; color: var(--accent); background: none; border: 0; padding: 0;
+               cursor: pointer; border-bottom: 1px dashed currentColor; }
+  .lojas-btn:hover, .lojas-btn:focus-visible { color: var(--text); outline: none; }
+  #pop { position: fixed; z-index: 50; display: none; min-width: 220px; max-width: 320px; background: var(--surface);
+         color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 8px 0;
+         box-shadow: 0 10px 30px rgba(0,0,0,.18); font-size: 13px; }
+  #pop .ph { padding: 2px 12px 6px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  #pop a { display: flex; justify-content: space-between; gap: 12px; padding: 5px 12px; color: var(--text); text-decoration: none; }
+  #pop a:hover { background: var(--surface-2); }
+  #pop a span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pop a span:last-child { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -165,6 +176,7 @@
   </section>
 </div>
 
+<div id="pop" role="tooltip"></div>
 <dialog id="modal">
   <div class="m-h">
     <div class="t"><h2 id="m-title"></h2><p id="m-sub"></p></div>
@@ -212,6 +224,9 @@ function header() {
     (kws.length ? `<optgroup label="Palavras-chave">${kws.map(opt).join("")}</optgroup>` : "");
 }
 
+const lojaCell = (p) => (p.lojas || []).length > 1
+  ? `<button class="lojas-btn" data-lojas="${esc(p.store)}|${esc(p.key)}" aria-haspopup="true">${esc(p.loja)} ▾</button>`
+  : esc(p.loja);
 const lojasTitle = (p) => (p.lojas || []).map(l => `${l.host} (${l.active} anúncio${l.active === 1 ? "" : "s"})`).join("\n") || p.loja;
 
 function filtered() {
@@ -248,7 +263,7 @@ function renderTable() {
     return `<tr>
       <td>${thumb(p.cover)}</td>
       <td><div class="pname">${esc(p.name)}</div><div class="pkey">${key}</div></td>
-      <td>${p.kind === "keyword" ? `<div class="loja-kw" title="${esc(lojasTitle(p))}">${esc(p.loja)}</div><div class="kwline" title="palavra-chave: ${esc(p.store)}">🔎 ${esc(p.store)}</div>` : esc(p.loja || p.store)}</td>
+      <td>${p.kind === "keyword" ? `<div class="loja-kw" ${(p.lojas || []).length > 1 ? "" : `title="${esc(p.loja)}"`}>${lojaCell(p)}</div><div class="kwline" title="palavra-chave: ${esc(p.store)}">🔎 ${esc(p.store)}</div>` : esc(p.loja || p.store)}</td>
       <td class="num"><b>${p.active}</b></td>
       <td class="num">${deltaChip(p.delta)}</td>
       <td class="num">${p.oldest ?? "—"}</td>
@@ -325,7 +340,7 @@ function renderEvolucao() {
   $("#grid").innerHTML = rows.map(p => {
     const runs = p.history.length;
     return `<div class="card">
-      <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st" title="${esc(lojasTitle(p))}">${p.kind === "keyword" ? `${esc(p.loja)} · 🔎 ${esc(p.store)}` : esc(p.store)}</div></div></div>
+      <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st">${p.kind === "keyword" ? `${lojaCell(p)} · 🔎 ${esc(p.store)}` : esc(p.store)}</div></div></div>
       <div class="kpi"><b>${p.active}</b><span>anúncios ativos</span><span class="chip scale" title="de ${p.scale.base} para ${p.active} anúncios">▲ +${p.scale.gain} em ${Math.min(3, runs - 1)} coleta${Math.min(3, runs - 1) > 1 ? "s" : ""}</span></div>
       ${chart(p.history)}
       <div class="actions"><button class="btn" data-open="${esc(p.store)}|${esc(p.key)}">Anúncios</button></div>
@@ -364,6 +379,40 @@ function render() {
   if (state.tab === "produtos") renderTable(); else renderEvolucao();
 }
 
+const pop = $("#pop"); let popFor = null, popTimer = null, popAt = 0, lastTouch = 0;
+document.addEventListener("touchstart", () => { lastTouch = Date.now(); }, { passive: true, capture: true });
+function showPop(btn) {
+  clearTimeout(popTimer);
+  const [s, k] = btn.dataset.lojas.split("|");
+  const p = DATA.products.find(x => x.store === s && x.key === k); if (!p) return;
+  pop.innerHTML = `<div class="ph">Vendido por ${p.lojas.length} lojas · ${p.active} anúncios</div>` +
+    p.lojas.map(l => `<a href="https://${esc(l.host)}" target="_blank" rel="noopener noreferrer">
+      <span>${esc(l.host)}</span><span>${l.active} anúncio${l.active === 1 ? "" : "s"}</span></a>`).join("");
+  pop.style.display = "block";
+  const r = btn.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+  let top = r.bottom + 6; if (top + h > window.innerHeight - 8) top = r.top - h - 6;
+  if (popFor !== btn) popAt = Date.now();
+  pop.style.left = left + "px"; pop.style.top = Math.max(8, top) + "px"; popFor = btn;
+}
+function hidePop(delay = 150) { clearTimeout(popTimer); popTimer = setTimeout(() => { pop.style.display = "none"; popFor = null; }, delay); }
+document.addEventListener("mouseover", (ev) => {
+  const b = ev.target.closest(".lojas-btn"); if (b) showPop(b);
+  else if (ev.target.closest("#pop")) clearTimeout(popTimer);
+});
+document.addEventListener("mouseout", (ev) => {
+  if (Date.now() - lastTouch < 1500) return;   // toque no celular: fecha só ao tocar fora ou de novo no botão
+  if (ev.target.closest(".lojas-btn, #pop") && !(ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest(".lojas-btn, #pop"))) hidePop();
+});
+document.addEventListener("focusin", (ev) => { const b = ev.target.closest(".lojas-btn"); if (b) showPop(b); });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") hidePop(0); });
+window.addEventListener("scroll", () => { if (popFor) hidePop(0); }, true);
+document.addEventListener("click", (ev) => {
+  const lb = ev.target.closest(".lojas-btn");
+  // no celular o toque gera "mouse em cima" + clique: só fecha se a lista já estava aberta antes do toque
+  if (lb) { if (popFor === lb && pop.style.display === "block" && Date.now() - popAt > 500) hidePop(0); else showPop(lb); return; }
+  if (!ev.target.closest("#pop")) hidePop(0);
+});
 document.addEventListener("click", (ev) => {
   const t = ev.target.closest("[data-tab],[data-k],[data-open],[data-msort],#m-close");
   if (!t) return;
