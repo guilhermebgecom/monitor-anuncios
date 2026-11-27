@@ -892,7 +892,7 @@ def products_of(S):
             sg = S["sight"][r["ad_id"]]
             ads.append({"id": r["ad_id"], "rank": sg["rank"], "dup": r["collation_count"] or 1,
                         "days": days_between(r["start_date"], now_ts), "page": r["page_name"],
-                        "page_id": r["page_id"],
+                        "page_id": r["page_id"], "link": r["link_url"],
                         "title": (r["title"] or r["body"] or "")[:140], "format": r["format"],
                         "cover": r["cover"] if r["cover"] and os.path.exists(r["cover"]) else None,
                         "new": r["ad_id"] not in S["prev_ads"] if prev else False})
@@ -998,6 +998,34 @@ def same_product(a, b):
     if len(inter) >= 3 and len(inter) / len(ta | tb) >= 0.6:
         return True
     return core_match(a, b)
+
+
+TRACKING = re.compile(r"^(utm_.*|fbclid|gclid|ttclid|msclkid|campaign_id|adset_id|ad_id|placement|site_source_name)$", re.I)
+
+
+def clean_url(u):
+    """Tira parâmetros de rastreamento (utm_*, fbclid...) e mantém o resto (ex.: variant)."""
+    from urllib.parse import urlencode, urlunparse
+    p = urlparse(u)
+    q = [(k, v) for k, v in parse_qs(p.query, keep_blank_values=True).items() if not TRACKING.match(k)]
+    return urlunparse(p._replace(query=urlencode([(k, v[0]) for k, v in q]), fragment=""))
+
+
+def loja_links(ads):
+    """Link do produto em cada loja: prefere a página de produto (/products/); senão, o destino
+    mais usado pelos anúncios daquela loja (ex.: o advertorial /funnel/...)."""
+    by_host = defaultdict(list)
+    for ad in ads:
+        if ad.get("link"):
+            k = product_key(ad["link"])
+            if k:
+                by_host[k.split("/")[0]].append(clean_url(ad["link"]))
+    out = {}
+    for host, links in by_host.items():
+        prod = [l for l in links if "/products/" in urlparse(l).path]
+        pool = prod or links
+        out[host] = max(set(pool), key=lambda l: (pool.count(l), -len(l)))
+    return out
 
 
 def merge_across_stores(rows):
@@ -1392,6 +1420,9 @@ def cmd_painel(con, a):
             data["products"].append(r)
     data["stores"].sort(key=lambda x: (x["kind"] == "keyword", x["name"].lower()))   # lojas primeiro
     data["all"] = merge_all(data["products"])
+    for r in data["products"] + data["all"]:      # link do produto em cada loja (lista "N lojas")
+        links = loja_links(r["ads"])
+        r["lojas"] = [dict(l, link=links.get(l["host"])) for l in (r.get("lojas") or [])]
     for r in data["all"]:
         r["store"] = "__all__"             # identifica a visão "Todas" (sources = entradas de origem)
     for r in data["products"] + data["all"]:

@@ -508,7 +508,7 @@ function showPop(btn) {
   const [s, k] = btn.dataset.lojas.split("|");
   const p = findProd(s, k); if (!p) return;
   pop.innerHTML = `<div class="ph">Vendido por ${p.lojas.length} lojas · ${p.active} anúncios</div>` +
-    p.lojas.map(l => `<a href="https://${esc(l.host)}" target="_blank" rel="noopener noreferrer">
+    p.lojas.map(l => `<a href="${esc(l.link || "https://" + l.host)}" title="${esc(l.link || "https://" + l.host)}" target="_blank" rel="noopener noreferrer">
       <span>${esc(l.host)}</span><span>${l.active} anúncio${l.active === 1 ? "" : "s"}</span></a>`).join("");
   placePop(btn);
 }
