@@ -1436,8 +1436,11 @@ def cmd_painel(con, a):
         base = r.get("lojas") or [{"host": r["key"].split("/")[0], "active": r["active"]}]
         r["lojas"] = [dict(l, links=links.get(l["host"], []),
                            link=(links.get(l["host"]) or [{"url": None}])[0]["url"]) for l in base]
-        # link embaixo do nome do produto = destino mais usado (da loja com mais anúncios)
-        r["link"] = next((l["link"] for l in r["lojas"] if l.get("link")), r.get("link"))
+        # link embaixo do nome do produto = destino usado pelo maior número de anúncios, somando todas
+        # as lojas (empate: prefere a página de produto)
+        allx = [x for l in r["lojas"] for x in (l.get("links") or [])]
+        if allx:
+            r["link"] = max(allx, key=lambda x: (x["n"], x["type"] == "página de produto", -len(x["url"])))["url"]
     for r in data["all"]:
         r["store"] = "__all__"             # identifica a visão "Todas" (sources = entradas de origem)
     for r in data["products"] + data["all"]:
