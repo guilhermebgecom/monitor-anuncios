@@ -734,14 +734,19 @@ def cmd_run(con, a):
 
 # ---------------- report ----------------
 
-def product_counts(con, store_id, run_id, rep=lambda k: k):
-    """Anúncios distintos por produto numa coleta; rep() junta chaves do mesmo produto."""
+def product_sets(con, store_id, run_id, rep=lambda k: k):
+    """IDs dos anúncios de cada produto numa coleta; rep() junta chaves do mesmo produto."""
     groups = defaultdict(set)
     for r in con.execute("""SELECT ap.product_key, s.ad_id FROM sightings s
                             JOIN ad_products ap ON ap.ad_id=s.ad_id AND ap.store_id=?
                             WHERE s.run_id=?""", (store_id, run_id)):
         groups[rep(r["product_key"])].add(r["ad_id"])
-    return {k: len(v) for k, v in groups.items()}
+    return dict(groups)
+
+
+def product_counts(con, store_id, run_id, rep=lambda k: k):
+    """Anúncios distintos por produto numa coleta."""
+    return {k: len(v) for k, v in product_sets(con, store_id, run_id, rep).items()}
 
 
 def scale_signal(series, window=3):
@@ -780,7 +785,8 @@ def store_state(con, st):
         norm = re.sub(r"[®™©]|\s+", " ", (names[k] or label_from_key(k))).strip().lower()
         reps[k] = by_name.setdefault(re.sub(r"\s+", " ", norm), k)
     rep = lambda k: reps.get(merged.get(k, k), merged.get(k, k))  # noqa: E731
-    counts = {r["id"]: product_counts(con, st["id"], r["id"], rep) for r in runs}
+    sets = {r["id"]: product_sets(con, st["id"], r["id"], rep) for r in runs}
+    counts = {rid: {k: len(v) for k, v in g.items()} for rid, g in sets.items()}
     ads_by_id = {r["ad_id"]: r for r in con.execute("SELECT * FROM ads WHERE store_id=?", (st["id"],))}
     ad_keys = defaultdict(list)
     for r in con.execute("SELECT ad_id, product_key FROM ad_products WHERE store_id=?", (st["id"],)):
@@ -793,7 +799,7 @@ def store_state(con, st):
     sight = {r["ad_id"]: r for r in con.execute("SELECT * FROM sightings WHERE run_id=?", (cur["id"],))}
     prev_ads = {r["ad_id"] for r in con.execute("SELECT ad_id FROM sightings WHERE run_id=?", (prev["id"],))} \
         if prev else set()
-    return {"runs": runs, "daily": daily, "cur": cur, "prev": prev, "counts": counts, "ads": ads_by_id, "ad_keys": ad_keys,
+    return {"runs": runs, "daily": daily, "sets": sets, "cur": cur, "prev": prev, "counts": counts, "ads": ads_by_id, "ad_keys": ad_keys,
             "first_run_of": first_run_of, "sight": sight, "prev_ads": prev_ads,
             "name": lambda k: names.get(k) or label_from_key(k), "now_ts": ts_of(cur["run_at"]),
             "run_date": {r["id"]: r["run_at"] for r in runs}}
@@ -885,6 +891,7 @@ def products_of(S):
             "cover": with_cover[0]["cover"] if with_cover else None,
             "link": next((r["link_url"] for r in mine if r["link_url"]), None),
             "history": [{"date": r["run_at"][:10], "n": c} for r, c in zip(daily, series)],
+            "hist_ids": {r["run_at"][:10]: set(S["sets"][r["id"]].get(k, ())) for r in daily},
             "scale": {"gain": sig[0], "base": sig[1]} if sig else None,
             "ads": ads})
     rows.sort(key=lambda r: -r["active"])
@@ -977,10 +984,8 @@ def merge_across_stores(rows):
                         seen.add(ad["id"])
                         ads.append(dict(ad, loja=r["key"].split("/")[0]))
             ads.sort(key=lambda x: (x["rank"] if x["rank"] is not None else 10**6, -x["dup"]))
-            hist = defaultdict(int)
-            for r in mem:
-                for h in r["history"]:
-                    hist[h["date"]] += h["n"]
+            hist_ids = union_hist(mem)
+            hist = {d: len(v) for d, v in hist_ids.items()}
             series = [hist[d] for d in sorted(hist)]
             sig = scale_signal(series)
             deltas = [r["delta"] for r in mem if r["delta"] is not None]
@@ -990,6 +995,7 @@ def merge_across_stores(rows):
                         "since": min(r["since"] for r in mem if r["since"]) if any(r["since"] for r in mem) else "",
                         "is_new": all(r["is_new"] for r in mem),
                         "history": [{"date": d, "n": hist[d]} for d in sorted(hist)],
+                        "hist_ids": hist_ids,
                         "scale": {"gain": sig[0], "base": sig[1]} if sig else None,
                         "keys": [r["key"] for r in mem]})
         else:
@@ -997,6 +1003,81 @@ def merge_across_stores(rows):
         out.append(add_stats(top))
     out.sort(key=lambda r: -r["active"])
     return out
+
+
+def union_hist(rows):
+    """Une os anúncios de cada dia de várias linhas (um anúncio visto em duas buscas conta uma vez)."""
+    out = defaultdict(set)
+    for r in rows:
+        for d, ids in (r.get("hist_ids") or {}).items():
+            out[d] |= ids
+    return dict(out)
+
+
+def merge_keywords(rows):
+    """Visão "Todas": junta o mesmo produto encontrado em palavras-chave diferentes numa linha só,
+    sem contar duas vezes os anúncios que aparecem nas duas buscas."""
+    n = len(rows)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    keysets = [set(r.get("keys") or [r["key"]]) for r in rows]
+    adsets = [{a["id"] for a in r["ads"]} for r in rows]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if rows[i]["store"] == rows[j]["store"] or find(i) == find(j):
+                continue
+            if keysets[i] & keysets[j] or adsets[i] & adsets[j] or same_product(rows[i], rows[j]):
+                parent[find(i)] = find(j)
+    groups = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(i)
+    out = []
+    for idx in groups.values():
+        mem = sorted((rows[i] for i in idx), key=lambda r: -r["active"])
+        top = dict(mem[0])
+        top["keywords"] = sorted({r["store"] for r in mem})
+        if len(mem) > 1:
+            best = min(mem, key=lambda r: (r.get("named_by_ad", False), broken_words(r["name"]), -r["active"]))
+            top["name"] = best["name"]
+            ads = {}
+            for r in mem:
+                for ad in r["ads"]:
+                    ads.setdefault(ad["id"], ad)
+            ads = sorted(ads.values(), key=lambda x: (x["rank"] if x["rank"] is not None else 10**6, -x["dup"]))
+            lojas = defaultdict(int)
+            for ad in ads:
+                lojas[ad.get("loja") or top["key"].split("/")[0]] += 1
+            hist_ids = union_hist(mem)
+            dates = sorted(hist_ids)
+            series = [len(hist_ids[d]) for d in dates]
+            sig = scale_signal(series)
+            olds = [r["oldest"] for r in mem if r["oldest"] is not None]
+            top.update({"active": len(ads), "ads": ads,
+                        "lojas": [{"host": h, "active": c} for h, c in sorted(lojas.items(), key=lambda x: -x[1])],
+                        "delta": (series[-1] - series[-2]) if len(series) > 1 else None,
+                        "oldest": max(olds) if olds else None,
+                        "since": min((r["since"] for r in mem if r["since"]), default=""),
+                        "is_new": all(r["is_new"] for r in mem),
+                        "history": [{"date": d, "n": c} for d, c in zip(dates, series)],
+                        "hist_ids": hist_ids,
+                        "scale": {"gain": sig[0], "base": sig[1]} if sig else None,
+                        "keys": sorted(set().union(*keysets_of(mem)))})
+            lj = top["lojas"]
+            top["loja"] = lj[0]["host"] if len(lj) == 1 else f"{len(lj)} lojas"
+            with_cover = [r for r in mem if r.get("cover")]
+            top["cover"] = with_cover[0]["cover"] if with_cover else None
+        out.append(add_stats(top))
+    out.sort(key=lambda r: -r["active"])
+    return out
+
+
+def keysets_of(rows):
+    return [set(r.get("keys") or [r["key"]]) for r in rows]
 
 
 def is_keyword_source(st):
@@ -1249,6 +1330,12 @@ def cmd_painel(con, a):
             covers.update(x for x in [r["cover"]] + [ad["cover"] for ad in r["ads"]] if x)
             data["products"].append(r)
     data["stores"].sort(key=lambda x: (x["kind"] == "keyword", x["name"].lower()))   # lojas primeiro
+    kw_rows = [r for r in data["products"] if r["kind"] == "keyword"]
+    data["kw_all"] = merge_keywords(kw_rows)
+    for r in data["kw_all"]:
+        r["store"] = "__kw_all__"          # identifica a visão "Todas" (keywords = palavras-chave de origem)
+    for r in data["products"] + data["kw_all"]:
+        r.pop("hist_ids", None)
     data["suggestions"] = compute_suggestions(con, 10)
     data["repo"] = os.environ.get("GITHUB_REPOSITORY", "")
     for x in data["suggestions"]:
