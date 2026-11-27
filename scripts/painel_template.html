@@ -134,7 +134,7 @@
   .lojas-btn { font: inherit; font-weight: 600; color: var(--accent); background: none; border: 0; padding: 0;
                cursor: pointer; border-bottom: 1px dashed currentColor; }
   .lojas-btn:hover, .lojas-btn:focus-visible { color: var(--text); outline: none; }
-  #pop { position: fixed; z-index: 50; display: none; min-width: 220px; max-width: 320px; background: var(--surface);
+  #pop { position: fixed; z-index: 50; display: none; min-width: 260px; max-width: min(460px, calc(100vw - 16px)); background: var(--surface);
          color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 8px 0;
          box-shadow: 0 10px 30px rgba(0,0,0,.18); font-size: 13px; }
   #pop .ph { padding: 2px 12px 6px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
@@ -165,6 +165,19 @@
   #pop .tipbody { padding: 4px 12px; white-space: pre-line; line-height: 1.5; }
   .kw-btn { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: help; border-bottom: 1px dashed currentColor; }
   .kw-btn:hover, .kw-btn:focus-visible { color: var(--text); outline: none; }
+  #pop .lrow { display: flex; align-items: center; gap: 10px; padding: 5px 12px; }
+  #pop .lrow:hover { background: var(--surface-2); }
+  #pop a.lmain { flex: 1; min-width: 0; padding: 0; display: flex; gap: 8px; align-items: baseline; justify-content: flex-start; }
+  #pop a.lmain:hover { background: none; text-decoration: underline; }
+  #pop .h { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #pop .ty { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #pop .cnt { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  #pop .more { font: inherit; font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-soft);
+               border: 0; border-radius: 999px; padding: 1px 8px; cursor: pointer; }
+  #pop .more.on { background: var(--accent); color: var(--surface); }
+  #pop .lextra { margin: 0 12px 6px 24px; border-left: 2px solid var(--border); }
+  #pop .lextra a { padding: 4px 10px; gap: 12px; }
+  #pop .lextra .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
 </style>
 </head>
 <body>
@@ -507,9 +520,22 @@ function showPop(btn) {
   }
   const [s, k] = btn.dataset.lojas.split("|");
   const p = findProd(s, k); if (!p) return;
+  const pathOf = (u) => { try { const x = new URL(u); return (x.pathname + x.search) || "/"; } catch (e) { return u; } };
+  const plural = (n) => `${n} anúncio${n === 1 ? "" : "s"}`;
   pop.innerHTML = `<div class="ph">Vendido por ${p.lojas.length} lojas · ${p.active} anúncios</div>` +
-    p.lojas.map(l => `<a href="${esc(l.link || "https://" + l.host)}" title="${esc(l.link || "https://" + l.host)}" target="_blank" rel="noopener noreferrer">
-      <span>${esc(l.host)}</span><span>${l.active} anúncio${l.active === 1 ? "" : "s"}</span></a>`).join("");
+    p.lojas.map((l, i) => {
+      const links = l.links || [], main = links[0], extra = links.slice(1);
+      const url = (main && main.url) || l.link || "https://" + l.host;
+      return `<div class="lrow">
+        <a class="lmain" href="${esc(url)}" title="${esc(url)}" target="_blank" rel="noopener noreferrer">
+          <span class="h">${esc(l.host)}</span>${main ? `<span class="ty">${esc(main.type)}</span>` : ""}</a>
+        <span class="cnt">${plural(l.active)}</span>
+        ${extra.length ? `<button class="more" data-more="${i}" title="Outros links desta loja para o mesmo produto">+${extra.length}</button>` : ""}
+      </div>
+      ${extra.length ? `<div class="lextra" data-extra="${i}" hidden>${[main, ...extra].map(x =>
+        `<a href="${esc(x.url)}" title="${esc(x.url)}" target="_blank" rel="noopener noreferrer">
+          <span class="path">${esc(pathOf(x.url))}</span><span class="ty">${esc(x.type)} · ${plural(x.n)}</span></a>`).join("")}</div>` : ""}`;
+    }).join("");
   placePop(btn);
 }
 function placePop(btn) {
@@ -520,10 +546,22 @@ function placePop(btn) {
   if (popFor !== btn) popAt = Date.now();
   pop.style.left = left + "px"; pop.style.top = Math.max(8, top) + "px"; popFor = btn;
 }
+function showExtra(btn, toggle) {
+  const box = pop.querySelector(`[data-extra="${btn.dataset.more}"]`); if (!box) return;
+  const open = toggle ? box.hidden : true;
+  pop.querySelectorAll(".lextra").forEach(x => { x.hidden = true; });
+  pop.querySelectorAll(".more").forEach(x => x.classList.remove("on"));
+  box.hidden = !open; btn.classList.toggle("on", open);
+  if (popFor) placePop(popFor);   // reposiciona: a lista ficou maior
+}
 function hidePop(delay = 150) { clearTimeout(popTimer); popTimer = setTimeout(() => { pop.style.display = "none"; popFor = null; }, delay); }
 document.addEventListener("mouseover", (ev) => {
   const b = ev.target.closest(".lojas-btn, .has-tip"); if (b) showPop(b);
-  else if (ev.target.closest("#pop")) clearTimeout(popTimer);
+  else if (ev.target.closest("#pop")) {
+    clearTimeout(popTimer);
+    const m = ev.target.closest("#pop .more");
+    if (m && Date.now() - lastTouch > 1500) showExtra(m, false);   // mouse em cima do "+N" abre os outros links
+  }
 });
 document.addEventListener("mouseout", (ev) => {
   if (Date.now() - lastTouch < 1500) return;   // toque no celular: fecha só ao tocar fora ou de novo no botão
@@ -531,8 +569,15 @@ document.addEventListener("mouseout", (ev) => {
 });
 document.addEventListener("focusin", (ev) => { const b = ev.target.closest(".lojas-btn, .has-tip"); if (b) showPop(b); });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") hidePop(0); });
-window.addEventListener("scroll", () => { if (popFor) hidePop(0); }, true);
+// fecha a lista quando a página ou a tabela rolam (não quando um campo de texto "rola" por dentro)
+window.addEventListener("scroll", (e) => {
+  const t = e.target;
+  if (!popFor || (t && t.nodeType === 1 && (t.matches("input, textarea, select") || t.closest("#pop")))) return;
+  hidePop(0);
+}, true);
 document.addEventListener("click", (ev) => {
+  const more = ev.target.closest("#pop .more");
+  if (more) { showExtra(more, true); return; }                      // toque/clique no "+N" abre/fecha
   const lb = ev.target.closest(".lojas-btn, .has-tip");
   // no celular o toque gera "mouse em cima" + clique: só fecha se a lista já estava aberta antes do toque
   if (lb) { if (popFor === lb && pop.style.display === "block" && Date.now() - popAt > 500) hidePop(0); else showPop(lb); return; }

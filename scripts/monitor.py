@@ -1011,20 +1011,31 @@ def clean_url(u):
     return urlunparse(p._replace(query=urlencode([(k, v[0]) for k, v in q]), fragment=""))
 
 
+def page_type(url):
+    path = urlparse(url).path.lower()
+    if "/products/" in path or "/product/" in path:
+        return "página de produto"
+    if re.search(r"/funnel/|/pages/|news-|listicle|advertorial|/lp/|/article", path):
+        return "advertorial"
+    if path.strip("/") == "":
+        return "página inicial"
+    return "outra página"
+
+
 def loja_links(ads):
-    """Link do produto em cada loja: prefere a página de produto (/products/); senão, o destino
-    mais usado pelos anúncios daquela loja (ex.: o advertorial /funnel/...)."""
-    by_host = defaultdict(list)
+    """Links do produto em cada loja, do mais usado pelos anúncios para o menos usado (o 1º é o
+    principal). Ex.: {"alessntials.com": [{"url": ".../products/x", "n": 27, "type": "página de produto"},
+    {"url": ".../funnel/news-x", "n": 9, "type": "advertorial"}]}"""
+    by_host = defaultdict(lambda: defaultdict(int))
     for ad in ads:
         if ad.get("link"):
             k = product_key(ad["link"])
             if k:
-                by_host[k.split("/")[0]].append(clean_url(ad["link"]))
+                by_host[k.split("/")[0]][clean_url(ad["link"])] += 1
     out = {}
     for host, links in by_host.items():
-        prod = [l for l in links if "/products/" in urlparse(l).path]
-        pool = prod or links
-        out[host] = max(set(pool), key=lambda l: (pool.count(l), -len(l)))
+        ordered = sorted(links.items(), key=lambda x: (-x[1], "/products/" not in urlparse(x[0]).path, len(x[0])))
+        out[host] = [{"url": u, "n": n, "type": page_type(u)} for u, n in ordered]
     return out
 
 
@@ -1422,7 +1433,8 @@ def cmd_painel(con, a):
     data["all"] = merge_all(data["products"])
     for r in data["products"] + data["all"]:      # link do produto em cada loja (lista "N lojas")
         links = loja_links(r["ads"])
-        r["lojas"] = [dict(l, link=links.get(l["host"])) for l in (r.get("lojas") or [])]
+        r["lojas"] = [dict(l, links=links.get(l["host"], []),
+                           link=(links.get(l["host"]) or [{"url": None}])[0]["url"]) for l in (r.get("lojas") or [])]
     for r in data["all"]:
         r["store"] = "__all__"             # identifica a visão "Todas" (sources = entradas de origem)
     for r in data["products"] + data["all"]:
