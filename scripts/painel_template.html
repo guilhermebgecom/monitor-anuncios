@@ -115,8 +115,14 @@
   .ad .tt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ad .meta { color: var(--muted); font-size: 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
   .ad a.open { font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }
+  .ad .links { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .ad a.page { font-size: 12.5px; color: var(--muted); text-decoration: none; white-space: nowrap; }
+  .ad a.page:hover, .ad a.open:hover { text-decoration: underline; }
   .ad a.open:hover { text-decoration: underline; }
   @media (max-width: 640px) {
+    .ad { flex-wrap: wrap; row-gap: 6px; }
+    .ad .t { flex: 1 1 0; }
+    .ad .links { flex-direction: row; width: 100%; justify-content: flex-start; gap: 16px; padding-left: 92px; }
     .stores { gap: 8px; }
     .store { flex: 1 1 100%; min-width: 0; padding: 8px 12px; }
     .store br { display: none; }
@@ -230,6 +236,9 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const br = (d) => d ? d.slice(8,10) + "/" + d.slice(5,7) + "/" + d.slice(0,4) : "—";
 const brs = (d) => d ? d.slice(8,10) + "/" + d.slice(5,7) : "";
+// anúncios ativos da página na Biblioteca: funciona mesmo se o anúncio foi desligado depois da coleta
+const pageLib = (pid) => "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL" +
+  "&is_targeted_country=false&media_type=all&search_type=page&view_all_page_id=" + encodeURIComponent(pid);
 const lib = (id) => "https://www.facebook.com/ads/library/?id=" + encodeURIComponent(id);
 const thumb = (src, cls = "") => src ? `<img class="thumb ${cls}" src="${esc(src)}" loading="lazy" alt="">`
                                      : `<div class="thumb empty ${cls}">sem capa</div>`;
@@ -423,7 +432,10 @@ function renderModal() {
           <span>${ad.days ?? "?"} dias no ar</span>·${ad.loja && p.kind === "keyword" ? `<span><b>${esc(ad.loja)}</b></span>·` : ""}<span>${esc(ad.page || "")}</span>${ad.format ? `·<span>${esc(ad.format)}</span>` : ""}
           ${ad.new ? '<span class="chip new">novo</span>' : ""}
         </div></div>
-      <a class="open" href="${lib(ad.id)}" target="_blank" rel="noopener noreferrer">Abrir na Biblioteca ↗</a>
+      <div class="links">
+        <a class="open" href="${lib(ad.id)}" target="_blank" rel="noopener noreferrer">Abrir na Biblioteca ↗</a>
+        ${ad.page_id ? `<a class="page" href="${pageLib(ad.page_id)}" target="_blank" rel="noopener noreferrer" title="Anúncios ativos da página ${esc(ad.page || "")} na Biblioteca">Ver página ↗</a>` : ""}
+      </div>
     </div>`).join("");
 }
 

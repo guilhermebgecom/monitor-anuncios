@@ -872,6 +872,7 @@ def products_of(S):
             sg = S["sight"][r["ad_id"]]
             ads.append({"id": r["ad_id"], "rank": sg["rank"], "dup": r["collation_count"] or 1,
                         "days": days_between(r["start_date"], now_ts), "page": r["page_name"],
+                        "page_id": r["page_id"],
                         "title": (r["title"] or r["body"] or "")[:140], "format": r["format"],
                         "cover": r["cover"] if r["cover"] and os.path.exists(r["cover"]) else None,
                         "new": r["ad_id"] not in S["prev_ads"] if prev else False})
