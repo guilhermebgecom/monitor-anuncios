@@ -282,21 +282,22 @@ const lojasTitle = (p) => (p.lojas || []).map(l => `${l.host} (${l.active} anún
 
 // "Todas": lojas + palavras-chave juntadas (mesmo produto em 2 buscas = 1 linha, sem contar anúncio 2 vezes)
 function pool() {
-  if (!state.store) return DATA.products.filter(p => p.kind !== "keyword").concat(DATA.kw_all || []);
+  if (!state.store) return DATA.all || DATA.products;
   return DATA.products.filter(p => p.store === state.store);
 }
-const findProd = (s, k) => DATA.products.concat(DATA.kw_all || []).find(x => x.store === s && x.key === k);
-const kwNames = (p) => p.keywords || [p.store];
+const findProd = (s, k) => DATA.products.concat(DATA.all || []).find(x => x.store === s && x.key === k);
+const kwNames = (p) => p.keywords !== undefined ? p.keywords : (p.kind === "keyword" ? [p.store] : []);
 const kwLabel = (p) => kwNames(p).length > 1 ? `${kwNames(p).length} palavras-chave` : kwNames(p)[0];
-const kwLine = (p) => kwNames(p).length > 1
+const kwLine = (p) => !kwNames(p).length ? "" : kwNames(p).length > 1
   ? `<button class="kw-btn has-tip" data-tip="${esc("Aparece nas palavras-chave:\n" + kwNames(p).map(k => "🔎 " + k).join("\n"))}">🔎 ${esc(kwLabel(p))} ▾</button>`
   : `<span title="palavra-chave: ${esc(kwLabel(p))}">🔎 ${esc(kwLabel(p))}</span>`;
 
+// busca ignora espaços e hífens: "phone holder" encontra "ph one hol der" (palavras quebradas de propósito)
+const compact = (t) => (t || "").toLowerCase().replace(/[\s\-_]+/g, "");
 function filtered() {
-  const q = state.q.trim().toLowerCase();
-  return pool().filter(p => true &&
-    (!q || p.name.toLowerCase().includes(q) || p.key.toLowerCase().includes(q) || (p.loja || "").toLowerCase().includes(q) ||
-    (p.lojas || []).some(l => l.host.toLowerCase().includes(q))));
+  const q = compact(state.q);
+  return pool().filter(p => !q || compact(p.name).includes(q) || compact(p.key).includes(q) ||
+    compact(p.loja).includes(q) || (p.lojas || []).some(l => compact(l.host).includes(q)));
 }
 
 // larguras fixas: as colunas não mudam de posição quando aparece um selo em "Sinal"
@@ -326,7 +327,7 @@ function renderTable() {
     return `<tr>
       <td>${thumb(p.cover)}</td>
       <td><div class="pname">${esc(p.name)}</div><div class="pkey">${key}</div></td>
-      <td>${p.kind === "keyword" ? `<div class="loja-kw" ${(p.lojas || []).length > 1 ? "" : `title="${esc(p.loja)}"`}>${lojaCell(p)}</div><div class="kwline">${kwLine(p)}</div>` : esc(p.loja || p.store)}</td>
+      <td>${p.kind === "keyword" ? `<div class="loja-kw" ${(p.lojas || []).length > 1 ? "" : `title="${esc(p.loja)}"`}>${lojaCell(p)}</div>${kwLine(p) ? `<div class="kwline">${kwLine(p)}</div>` : ""}` : esc(p.loja || p.store)}</td>
       <td class="num"><b>${p.active}</b></td>
       <td class="num">${deltaChip(p.delta)}</td>
       <td class="num">${p.oldest ?? "—"}</td>
@@ -403,7 +404,7 @@ function renderEvolucao() {
   $("#grid").innerHTML = rows.map(p => {
     const runs = p.history.length;
     return `<div class="card">
-      <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st">${p.kind === "keyword" ? `${lojaCell(p)} · ${kwLine(p)}` : esc(p.store)}</div></div></div>
+      <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st">${p.kind === "keyword" ? `${lojaCell(p)}${kwLine(p) ? " · " + kwLine(p) : ""}` : esc(p.loja || p.store)}</div></div></div>
       ${statsLine(p)}
       <div class="kpi"><b>${p.active}</b><span>anúncios ativos</span><span class="chip scale" title="de ${p.scale.base} para ${p.active} anúncios">▲ +${p.scale.gain} em ${Math.min(3, runs - 1)} coleta${Math.min(3, runs - 1) > 1 ? "s" : ""}</span></div>
       ${chart(p.history)}
@@ -422,7 +423,10 @@ function renderModal() {
   const pages = new Set(p.ads.map(a => a.page).filter(Boolean)).size, dups = p.ads.reduce((s, a) => s + (a.dup || 1), 0);
   const oldest = Math.max(0, ...p.ads.map(a => a.days || 0)), old30 = p.ads.filter(a => (a.days || 0) >= 30).length;
   $("#m-stats").innerHTML = `<span><b>${p.ads.length}</b> anúncios</span><span>📄 <b>${pages}</b> página${pages === 1 ? "" : "s"}</span><span>🔁 <b>${dups}</b> duplicações</span><span>⏳ <b>${old30}</b> com 30+ dias · mais antigo há <b>${oldest}</b> dias</span>`;
-  $("#m-sub").textContent = `${p.kind === "keyword" ? ((p.lojas || []).length > 1 ? p.lojas.map(l => l.host).join(", ") : p.loja) + " · 🔎 " + kwNames(p).join(", ") : p.store} · ${p.ads.length} anúncio(s) ativo(s) na amostra · posição = ranking de impressões na Biblioteca de Anúncios`;
+  const origem = p.kind === "keyword"
+    ? ((p.lojas || []).length > 1 ? p.lojas.map(l => l.host).join(", ") : p.loja) + (kwNames(p).length ? " · 🔎 " + kwNames(p).join(", ") : "")
+    : (p.loja || p.store);
+  $("#m-sub").textContent = `${origem} · ${p.ads.length} anúncio(s) ativo(s) na amostra · posição = ranking de impressões na Biblioteca de Anúncios`;
   document.querySelectorAll("[data-msort]").forEach(b => b.classList.toggle("on", b.dataset.msort === state.msort));
   $("#m-list").innerHTML = ads.map((ad, i) => `<div class="ad">
       <div class="pos">${i + 1}</div>${thumb(ad.cover)}
@@ -442,9 +446,9 @@ function renderModal() {
 function sugFiltered() {
   const sel = DATA.stores.find(s => s.name === state.store);
   if (sel && sel.kind !== "keyword") return null;          // loja monitorada selecionada: não se aplica
-  const q = state.q.trim().toLowerCase();
+  const q = compact(state.q);
   return (DATA.suggestions || []).filter(x => (!state.store || x.keywords.includes(state.store)) &&
-    (!q || x.host.includes(q) || x.products.some(p => p.name.toLowerCase().includes(q))));
+    (!q || compact(x.host).includes(q) || x.products.some(p => compact(p.name).includes(q))));
 }
 const sugLine = (x) => `{"nome": "${x.name}", "site": "${x.host}", "pais": "${x.country || "US"}"},`;
 

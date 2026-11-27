@@ -786,7 +786,25 @@ def store_state(con, st):
         # mesmo nome só junta dentro do MESMO site: numa busca por palavra-chave, lojas diferentes
         # com o mesmo produto ficam separadas aqui (e são agrupadas depois como "N lojas")
         reps[k] = by_name.setdefault((k.split("/")[0], re.sub(r"\s+", " ", norm)), k)
-    rep = lambda k: reps.get(merged.get(k, k), merged.get(k, k))  # noqa: E731
+    rep0 = lambda k: reps.get(merged.get(k, k), merged.get(k, k))  # noqa: E731
+    # palavras quebradas de propósito no mesmo site ("ph one hol der" = "phone holder")
+    fz = {}
+
+    def fz_find(k):
+        while fz.get(k, k) != k:
+            k = fz[k]
+        return k
+    by_host = defaultdict(list)
+    for k in sorted({rep0(k) for k in names}):
+        c = name_core(names.get(k) or label_from_key(k), k)
+        if c:
+            by_host[k.split("/")[0]].append((k, c))
+    for items in by_host.values():
+        for i, (ka, ca) in enumerate(items):
+            for kb, cb in items[i + 1:]:
+                if fz_find(ka) != fz_find(kb) and core_similar(ca, cb):
+                    fz[fz_find(kb)] = fz_find(ka)
+    rep = lambda k: fz_find(rep0(k))  # noqa: E731
     sets = {r["id"]: product_sets(con, st["id"], r["id"], rep) for r in runs}
     counts = {rid: {k: len(v) for k, v in g.items()} for rid, g in sets.items()}
     ads_by_id = {r["ad_id"]: r for r in con.execute("SELECT * FROM ads WHERE store_id=?", (st["id"],))}
@@ -936,6 +954,36 @@ def _same_creative(x, y):
     return shape and color
 
 
+CORE_DROP = r"\b(saker|sakerplus|aless|new|upgraded|professional|premium|portable|the|for|with|and)\b"
+
+
+def name_core(name, key):
+    """Nome reduzido às letras, para reconhecer palavras quebradas de propósito
+    ("Magnetic ph one hol der" = "Magnetic phone holder"). Ignora "2 in 1"/"3-in-1" e palavras de marca.
+    Só vale para nomes vindos do link (nomes tirados do título do anúncio, como "FLASH SALE 67% OFF",
+    ficam de fora: são ofertas, não produtos)."""
+    if not name or not descriptive_slug(key):
+        return None
+    n = re.sub(r"\b\d+\s*-?\s*in\s*-?\s*\d+\b", " ", name.lower())
+    n = re.sub(CORE_DROP, " ", n)
+    n = re.sub(r"[^a-z]", "", n)
+    return n if len(n) >= 10 else None
+
+
+def core_similar(ca, cb):
+    if not ca or not cb:
+        return False
+    import difflib
+    m = difflib.SequenceMatcher(None, ca, cb)
+    return m.real_quick_ratio() >= 0.85 and m.quick_ratio() >= 0.85 and m.ratio() >= 0.85
+
+
+def core_match(a, b):
+    if a.get("named_by_ad") or b.get("named_by_ad"):
+        return False
+    return core_similar(name_core(a["name"], a["key"]), name_core(b["name"], b["key"]))
+
+
 def same_product(a, b):
     """Dois produtos de lojas diferentes são o mesmo? Criativo quase idêntico, ou nomes com 60%+ das
     palavras em comum (e pelo menos 3). Validado em dados reais: junta shawl × scarf (mesmo vídeo),
@@ -947,7 +995,9 @@ def same_product(a, b):
     ta = {t for t in a["key"].split("/products/")[-1].split("-") if t and t not in NAME_STOP}
     tb = {t for t in b["key"].split("/products/")[-1].split("-") if t and t not in NAME_STOP}
     inter = ta & tb
-    return len(inter) >= 3 and len(inter) / len(ta | tb) >= 0.6
+    if len(inter) >= 3 and len(inter) / len(ta | tb) >= 0.6:
+        return True
+    return core_match(a, b)
 
 
 def merge_across_stores(rows):
@@ -1017,9 +1067,13 @@ def union_hist(rows):
     return dict(out)
 
 
-def merge_keywords(rows):
-    """Visão "Todas": junta o mesmo produto encontrado em palavras-chave diferentes numa linha só,
-    sem contar duas vezes os anúncios que aparecem nas duas buscas."""
+def merge_all(rows):
+    """Visão "Todas": junta o mesmo produto vindo de entradas diferentes (lojas monitoradas e
+    palavras-chave) numa linha só, contando cada anúncio uma vez. Junta quando há link ou anúncio
+    em comum, palavras quebradas de propósito (core_match) e, entre palavras-chave, também pelo
+    criativo/nome (same_product)."""
+    rows = [dict(r, ads=[a if a.get("loja") else dict(a, loja=r["key"].split("/")[0]) for a in r["ads"]])
+            for r in rows]
     n = len(rows)
     parent = list(range(n))
 
@@ -1028,13 +1082,15 @@ def merge_keywords(rows):
             parent[i] = parent[parent[i]]
             i = parent[i]
         return i
-    keysets = [set(r.get("keys") or [r["key"]]) for r in rows]
+    keysets = keysets_of(rows)
     adsets = [{a["id"] for a in r["ads"]} for r in rows]
     for i in range(n):
         for j in range(i + 1, n):
             if rows[i]["store"] == rows[j]["store"] or find(i) == find(j):
                 continue
-            if keysets[i] & keysets[j] or adsets[i] & adsets[j] or same_product(rows[i], rows[j]):
+            both_kw = rows[i]["kind"] == "keyword" and rows[j]["kind"] == "keyword"
+            if keysets[i] & keysets[j] or adsets[i] & adsets[j] or core_match(rows[i], rows[j]) \
+                    or (both_kw and same_product(rows[i], rows[j])):
                 parent[find(i)] = find(j)
     groups = defaultdict(list)
     for i in range(n):
@@ -1043,7 +1099,8 @@ def merge_keywords(rows):
     for idx in groups.values():
         mem = sorted((rows[i] for i in idx), key=lambda r: -r["active"])
         top = dict(mem[0])
-        top["keywords"] = sorted({r["store"] for r in mem})
+        keywords = sorted({r["store"] for r in mem if r["kind"] == "keyword"})
+        stores = sorted({r["store"] for r in mem if r["kind"] != "keyword"})
         if len(mem) > 1:
             best = min(mem, key=lambda r: (r.get("named_by_ad", False), broken_words(r["name"]), -r["active"]))
             top["name"] = best["name"]
@@ -1054,7 +1111,7 @@ def merge_keywords(rows):
             ads = sorted(ads.values(), key=lambda x: (x["rank"] if x["rank"] is not None else 10**6, -x["dup"]))
             lojas = defaultdict(int)
             for ad in ads:
-                lojas[ad.get("loja") or top["key"].split("/")[0]] += 1
+                lojas[ad["loja"]] += 1
             hist_ids = union_hist(mem)
             dates = sorted(hist_ids)
             series = [len(hist_ids[d]) for d in dates]
@@ -1070,10 +1127,13 @@ def merge_keywords(rows):
                         "hist_ids": hist_ids,
                         "scale": {"gain": sig[0], "base": sig[1]} if sig else None,
                         "keys": sorted(set().union(*keysets_of(mem)))})
-            lj = top["lojas"]
-            top["loja"] = lj[0]["host"] if len(lj) == 1 else f"{len(lj)} lojas"
             with_cover = [r for r in mem if r.get("cover")]
             top["cover"] = with_cover[0]["cover"] if with_cover else None
+        lj = top.get("lojas") or [{"host": top["key"].split("/")[0], "active": top["active"]}]
+        top["lojas"] = lj
+        top["keywords"], top["sources"] = keywords, stores + keywords
+        top["loja"] = f"{len(lj)} lojas" if len(lj) > 1 else (stores[0] if stores else lj[0]["host"])
+        top["kind"] = "store" if not keywords and len(lj) == 1 else "keyword"
         out.append(add_stats(top))
     out.sort(key=lambda r: -r["active"])
     return out
@@ -1333,11 +1393,10 @@ def cmd_painel(con, a):
             covers.update(x for x in [r["cover"]] + [ad["cover"] for ad in r["ads"]] if x)
             data["products"].append(r)
     data["stores"].sort(key=lambda x: (x["kind"] == "keyword", x["name"].lower()))   # lojas primeiro
-    kw_rows = [r for r in data["products"] if r["kind"] == "keyword"]
-    data["kw_all"] = merge_keywords(kw_rows)
-    for r in data["kw_all"]:
-        r["store"] = "__kw_all__"          # identifica a visão "Todas" (keywords = palavras-chave de origem)
-    for r in data["products"] + data["kw_all"]:
+    data["all"] = merge_all(data["products"])
+    for r in data["all"]:
+        r["store"] = "__all__"             # identifica a visão "Todas" (sources = entradas de origem)
+    for r in data["products"] + data["all"]:
         r.pop("hist_ids", None)
     data["suggestions"] = compute_suggestions(con, 10)
     data["repo"] = os.environ.get("GITHUB_REPOSITORY", "")
