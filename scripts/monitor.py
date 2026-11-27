@@ -1070,8 +1070,8 @@ def union_hist(rows):
 def merge_all(rows):
     """Visão "Todas": junta o mesmo produto vindo de entradas diferentes (lojas monitoradas e
     palavras-chave) numa linha só, contando cada anúncio uma vez. Junta quando há link ou anúncio
-    em comum, palavras quebradas de propósito (core_match) e, entre palavras-chave, também pelo
-    criativo/nome (same_product)."""
+    em comum ou same_product (criativo quase idêntico, nome com 60%+ das palavras ou palavras
+    quebradas de propósito)."""
     rows = [dict(r, ads=[a if a.get("loja") else dict(a, loja=r["key"].split("/")[0]) for a in r["ads"]])
             for r in rows]
     n = len(rows)
@@ -1088,9 +1088,7 @@ def merge_all(rows):
         for j in range(i + 1, n):
             if rows[i]["store"] == rows[j]["store"] or find(i) == find(j):
                 continue
-            both_kw = rows[i]["kind"] == "keyword" and rows[j]["kind"] == "keyword"
-            if keysets[i] & keysets[j] or adsets[i] & adsets[j] or core_match(rows[i], rows[j]) \
-                    or (both_kw and same_product(rows[i], rows[j])):
+            if keysets[i] & keysets[j] or adsets[i] & adsets[j] or same_product(rows[i], rows[j]):
                 parent[find(i)] = find(j)
     groups = defaultdict(list)
     for i in range(n):
