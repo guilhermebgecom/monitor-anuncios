@@ -175,6 +175,10 @@
   #pop .more { font: inherit; font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-soft);
                border: 0; border-radius: 999px; padding: 1px 8px; cursor: pointer; }
   #pop .more.on { background: var(--accent); color: var(--surface); }
+  .lojas-btn.more-chip { font-size: 12px; font-weight: 700; color: var(--accent); background: var(--accent-soft);
+                         border: 0; border-radius: 999px; padding: 1px 8px; margin-left: 4px; }
+  .lojas-btn.more-chip:hover, .lojas-btn.more-chip:focus-visible { background: var(--accent); color: var(--surface); }
+  #pop > a .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
   #pop .lextra { margin: 0 12px 6px 24px; border-left: 2px solid var(--border); }
   #pop .lextra a { padding: 4px 10px; gap: 12px; }
   #pop .lextra .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
@@ -288,9 +292,14 @@ function miniChips(p) {
   return out.map(([i, n, t]) => `<button class="chip mini has-tip" data-tip="${esc(t)}">${i} ${n}</button>`).join("");
 }
 const statsLine = (p) => p.flags ? `<div class="stats"><span>🔁 <b>${p.dup_total}</b> duplicações</span><span>📄 <b>${p.pages.length}</b> página${p.pages.length === 1 ? "" : "s"}</span><span>⏳ <b>${p.old_ads}</b> com 30+ dias no top</span></div>` : "";
+// loja única que usa mais de um link para o produto: "+N" abre a lista de links
+const moreChip = (p) => {
+  const l = (p.lojas || [])[0], n = l && (p.lojas.length === 1) ? (l.links || []).length : 0;
+  return n > 1 ? ` <button class="lojas-btn more-chip" data-lojas="${esc(p.store)}|${esc(p.key)}" title="Outros links desta loja para o produto">+${n - 1}</button>` : "";
+};
 const lojaCell = (p) => (p.lojas || []).length > 1
   ? `<button class="lojas-btn" data-lojas="${esc(p.store)}|${esc(p.key)}" aria-haspopup="true">${esc(p.loja)} ▾</button>`
-  : esc(p.loja);
+  : esc(p.loja) + moreChip(p);
 const lojasTitle = (p) => (p.lojas || []).map(l => `${l.host} (${l.active} anúncio${l.active === 1 ? "" : "s"})`).join("\n") || p.loja;
 
 // "Todas": lojas + palavras-chave juntadas (mesmo produto em 2 buscas = 1 linha, sem contar anúncio 2 vezes)
@@ -340,7 +349,7 @@ function renderTable() {
     return `<tr>
       <td>${thumb(p.cover)}</td>
       <td><div class="pname">${esc(p.name)}</div><div class="pkey">${key}</div></td>
-      <td>${p.kind === "keyword" ? `<div class="loja-kw" ${(p.lojas || []).length > 1 ? "" : `title="${esc(p.loja)}"`}>${lojaCell(p)}</div>${kwLine(p) ? `<div class="kwline">${kwLine(p)}</div>` : ""}` : esc(p.loja || p.store)}</td>
+      <td>${p.kind === "keyword" ? `<div class="loja-kw" ${(p.lojas || []).length > 1 ? "" : `title="${esc(p.loja)}"`}>${lojaCell(p)}</div>${kwLine(p) ? `<div class="kwline">${kwLine(p)}</div>` : ""}` : esc(p.loja || p.store) + moreChip(p)}</td>
       <td class="num"><b>${p.active}</b></td>
       <td class="num">${deltaChip(p.delta)}</td>
       <td class="num">${p.oldest ?? "—"}</td>
@@ -417,7 +426,7 @@ function renderEvolucao() {
   $("#grid").innerHTML = rows.map(p => {
     const runs = p.history.length;
     return `<div class="card">
-      <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st">${p.kind === "keyword" ? `${lojaCell(p)}${kwLine(p) ? " · " + kwLine(p) : ""}` : esc(p.loja || p.store)}</div></div></div>
+      <div class="card-h">${thumb(p.cover)}<div class="t"><div class="pname">${esc(p.name)}</div><div class="st">${p.kind === "keyword" ? `${lojaCell(p)}${kwLine(p) ? " · " + kwLine(p) : ""}` : esc(p.loja || p.store) + moreChip(p)}</div></div></div>
       ${statsLine(p)}
       <div class="kpi"><b>${p.active}</b><span>anúncios ativos</span><span class="chip scale" title="de ${p.scale.base} para ${p.active} anúncios">▲ +${p.scale.gain} em ${Math.min(3, runs - 1)} coleta${Math.min(3, runs - 1) > 1 ? "s" : ""}</span></div>
       ${chart(p.history)}
@@ -522,6 +531,13 @@ function showPop(btn) {
   const p = findProd(s, k); if (!p) return;
   const pathOf = (u) => { try { const x = new URL(u); return (x.pathname + x.search) || "/"; } catch (e) { return u; } };
   const plural = (n) => `${n} anúncio${n === 1 ? "" : "s"}`;
+  if (p.lojas.length === 1) {   // loja única: lista direta de todos os links (o 1º é o principal)
+    const l = p.lojas[0];
+    pop.innerHTML = `<div class="ph">${esc(l.host)} · ${(l.links || []).length} links para este produto</div>` +
+      (l.links || []).map((x, i) => `<a href="${esc(x.url)}" title="${esc(x.url)}" target="_blank" rel="noopener noreferrer">
+        <span class="path">${i === 0 ? "<b>principal</b> · " : ""}${esc(pathOf(x.url))}</span><span class="ty">${esc(x.type)} · ${plural(x.n)}</span></a>`).join("");
+    return placePop(btn);
+  }
   pop.innerHTML = `<div class="ph">Vendido por ${p.lojas.length} lojas · ${p.active} anúncios</div>` +
     p.lojas.map((l, i) => {
       const links = l.links || [], main = links[0], extra = links.slice(1);

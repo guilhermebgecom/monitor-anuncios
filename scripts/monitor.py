@@ -1433,8 +1433,11 @@ def cmd_painel(con, a):
     data["all"] = merge_all(data["products"])
     for r in data["products"] + data["all"]:      # link do produto em cada loja (lista "N lojas")
         links = loja_links(r["ads"])
+        base = r.get("lojas") or [{"host": r["key"].split("/")[0], "active": r["active"]}]
         r["lojas"] = [dict(l, links=links.get(l["host"], []),
-                           link=(links.get(l["host"]) or [{"url": None}])[0]["url"]) for l in (r.get("lojas") or [])]
+                           link=(links.get(l["host"]) or [{"url": None}])[0]["url"]) for l in base]
+        # link embaixo do nome do produto = destino mais usado (da loja com mais anúncios)
+        r["link"] = next((l["link"] for l in r["lojas"] if l.get("link")), r.get("link"))
     for r in data["all"]:
         r["store"] = "__all__"             # identifica a visão "Todas" (sources = entradas de origem)
     for r in data["products"] + data["all"]:
