@@ -783,7 +783,9 @@ def store_state(con, st):
         if k in merged:
             continue
         norm = re.sub(r"[®™©]|\s+", " ", (names[k] or label_from_key(k))).strip().lower()
-        reps[k] = by_name.setdefault(re.sub(r"\s+", " ", norm), k)
+        # mesmo nome só junta dentro do MESMO site: numa busca por palavra-chave, lojas diferentes
+        # com o mesmo produto ficam separadas aqui (e são agrupadas depois como "N lojas")
+        reps[k] = by_name.setdefault((k.split("/")[0], re.sub(r"\s+", " ", norm)), k)
     rep = lambda k: reps.get(merged.get(k, k), merged.get(k, k))  # noqa: E731
     sets = {r["id"]: product_sets(con, st["id"], r["id"], rep) for r in runs}
     counts = {rid: {k: len(v) for k, v in g.items()} for rid, g in sets.items()}
